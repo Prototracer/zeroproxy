@@ -1,0 +1,13 @@
+.env
+*.pem
+
+__pycache__/
+*.pyc
+
+.venv/
+node_modules/
+dist/
+
+frontend/public/models/
+
+.DS_Store
