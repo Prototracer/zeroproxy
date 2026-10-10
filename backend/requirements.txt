@@ -10,3 +10,5 @@ cryptography
 slowapi
 pytest
 httpx
+python-dotenv
+greenlet
