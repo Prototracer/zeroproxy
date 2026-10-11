@@ -11,6 +11,9 @@ JWT_SECRET = os.getenv("JWT_SECRET")
 QR_MASTER_KEY = os.getenv("QR_MASTER_KEY")
 ENC_KEY = os.getenv("ENC_KEY")
 
+JWT_ALGORITHM="HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+
 CAMPUS_CIDRS = [
     cidr.strip()
     for cidr in os.getenv("CAMPUS_CIDRS", "").split(",")
