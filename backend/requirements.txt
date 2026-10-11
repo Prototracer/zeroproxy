@@ -5,7 +5,7 @@ sqlalchemy
 asyncpg
 alembic
 argon2-cffi
-PyJWT
+PyJWT==2.15.1
 cryptography
 slowapi
 pytest
