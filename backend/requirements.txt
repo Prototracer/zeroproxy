@@ -12,3 +12,4 @@ pytest
 httpx
 python-dotenv
 greenlet
+email-validator==2.3.0
