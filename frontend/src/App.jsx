@@ -6,17 +6,14 @@ import Register from './auth/Register.jsx';
 import FacultyDashboard from './faculty/FacultyDashboard.jsx';
 import StudentDashboard from './student/StudentDashboard.jsx';
 import Enroll from './faculty/Enroll.jsx';
+import CameraTest from './student/CameraTest.jsx';
 
 function ProtectedFaculty() {
   const token = sessionStorage.getItem('token');
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
     return <Navigate to="/login" replace />;
   }
 
@@ -28,11 +25,7 @@ function ProtectedStudent() {
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (role !== 'student') {
+  if (isLoggedIn !== 'true' || !token || role !== 'student') {
     return <Navigate to="/login" replace />;
   }
 
@@ -44,11 +37,7 @@ function ProtectedEnroll() {
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
     return <Navigate to="/login" replace />;
   }
 
@@ -58,34 +47,14 @@ function ProtectedEnroll() {
 function App() {
   return (
     <Routes>
-      <Route
-        path="/"
-        element={<Navigate to="/login" replace />}
-      />
-
+      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
-
       <Route path="/register" element={<Register />} />
-
-      <Route
-        path="/faculty"
-        element={<ProtectedFaculty />}
-      />
-
-      <Route
-        path="/faculty/enroll"
-        element={<ProtectedEnroll />}
-      />
-
-      <Route
-        path="/student"
-        element={<ProtectedStudent />}
-      />
-
-      <Route
-        path="*"
-        element={<Navigate to="/login" replace />}
-      />
+      <Route path="/faculty" element={<ProtectedFaculty />} />
+      <Route path="/faculty/enroll" element={<ProtectedEnroll />} />
+      <Route path="/student" element={<ProtectedStudent />} />
+      <Route path="/camera-test" element={<CameraTest />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );
 }
