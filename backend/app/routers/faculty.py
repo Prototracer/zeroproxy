@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select,exists
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.models.face_vector import FaceVector
 from app.core.deps import require_role
 from app.db import get_db
 from app.models.user import User
@@ -55,6 +55,22 @@ async def approve_student(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Student is not pending approval",
+        )
+
+    enrollment_result = await db.execute(
+        select(FaceVector.id)
+        .where(
+            FaceVector.user_id == student.id,
+            FaceVector.tenant_id == faculty.tenant_id,
+            FaceVector.active.is_(True),
+        )
+        .limit(1)
+    )
+
+    if enrollment_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Student must complete face enrollment before approval",
         )
 
     student.status = "active"

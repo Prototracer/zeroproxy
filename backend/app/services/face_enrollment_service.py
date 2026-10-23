@@ -1,0 +1,162 @@
+
+from datetime import datetime, timezone
+from itertools import combinations
+
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import FACE_MATCH_THRESHOLD
+from app.core.encryption import (
+    DescriptorEncryptionError,
+    decrypt_descriptor_set,
+    encrypt_descriptor_set,
+)
+from app.core.face_enrollment import (
+    EnrollmentValidationError,
+    euclidean_distance,
+    validate_enrollment_descriptors,
+)
+from app.models.face_vector import FaceVector
+from app.models.user import User
+
+
+class EnrollmentServiceError(Exception):
+    """Base exception for face-enrollment service errors."""
+
+
+class EnrollmentStudentNotFound(EnrollmentServiceError):
+    """Student does not exist in the faculty member's tenant."""
+
+
+class DuplicateFaceError(EnrollmentServiceError):
+    """A submitted face matches another student's active enrollment."""
+
+
+class EnrollmentDataError(EnrollmentServiceError):
+    """Enrollment data or stored biometric data is invalid."""
+
+
+async def enroll_student(
+    db: AsyncSession,
+    *,
+    faculty: User,
+    student_id: int,
+    descriptors: list[list[float]],
+    consent: bool,
+) -> FaceVector:
+    """Validate, encrypt and store a student's face enrollment.
+
+    The caller must authenticate the faculty member and require the
+    faculty role. This function commits the enrollment transaction.
+    """
+
+    if faculty.role != "faculty":
+        raise EnrollmentServiceError("Faculty authorization required")
+
+    if consent is not True:
+        raise EnrollmentDataError("Consent is required for enrollment")
+
+    try:
+        validated = validate_enrollment_descriptors(descriptors)
+    except (EnrollmentValidationError, TypeError) as exc:
+        raise EnrollmentDataError(str(exc)) from exc
+
+    # Find the student within the faculty member's tenant.
+    result = await db.execute(
+        select(User).where(
+            User.id == student_id,
+            User.tenant_id == faculty.tenant_id,
+            User.role == "student",
+        )
+    )
+    student = result.scalar_one_or_none()
+
+    if student is None:
+        raise EnrollmentStudentNotFound(
+            "Student not found in your tenant"
+        )
+
+    try:
+        # Compare against every other student's active enrollment.
+        result = await db.execute(
+            select(FaceVector).where(
+                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.active.is_(True),
+                FaceVector.user_id != student.id,
+            )
+        )
+        active_enrollments = result.scalars().all()
+
+        for existing in active_enrollments:
+            try:
+                existing_descriptors = decrypt_descriptor_set(
+                    existing.descriptor_enc,
+                    user_id=existing.user_id,
+                    version=existing.version,
+                )
+            except (DescriptorEncryptionError, RuntimeError) as exc:
+                # Fail closed rather than silently skipping an enrollment
+                # that could contain a duplicate face.
+                raise EnrollmentServiceError(
+                    "An existing enrollment could not be verified"
+                ) from exc
+
+            for proposed in validated:
+                for stored in existing_descriptors:
+                    if (
+                        euclidean_distance(proposed, stored)
+                        < FACE_MATCH_THRESHOLD
+                    ):
+                        raise DuplicateFaceError(
+                            "Face matches another student's active enrollment"
+                        )
+
+        # Re-enrollment uses the next version and deactivates the old one.
+        result = await db.execute(
+            select(func.max(FaceVector.version)).where(
+                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.user_id == student.id,
+            )
+        )
+        current_version = result.scalar_one_or_none() or 0
+        new_version = current_version + 1
+
+        encrypted = encrypt_descriptor_set(
+            validated,
+            user_id=student.id,
+            version=new_version,
+        )
+
+        # Deactivate older versions before inserting the new active record.
+        result = await db.execute(
+            select(FaceVector).where(
+                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.user_id == student.id,
+                FaceVector.active.is_(True),
+            )
+        )
+        for old_enrollment in result.scalars().all():
+            old_enrollment.active = False
+
+        enrollment = FaceVector(
+            tenant_id=faculty.tenant_id,
+            user_id=student.id,
+            descriptor_enc=encrypted,
+            version=new_version,
+            active=True,
+            approved_by=faculty.id,
+            consent_at=datetime.now(timezone.utc),
+        )
+
+        db.add(enrollment)
+
+        # Activate the student only after valid enrollment data is ready.
+        student.status = "active"
+
+        await db.commit()
+        await db.refresh(enrollment)
+        return enrollment
+
+    except Exception:
+        await db.rollback()
+        raise
