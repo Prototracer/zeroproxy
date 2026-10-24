@@ -121,7 +121,7 @@ export default function JoinRequests() {
         padding: '30px',
         boxSizing: 'border-box',
         color: '#ffffff',
-        fontFamily: "'Inter', Arial, sans-serif',
+        fontFamily: "'Inter', Arial, sans-serif",
         background:
           'radial-gradient(circle at top right, #3b1d60, transparent 40%), linear-gradient(135deg, #090d1f, #121833 60%, #0a0d1d)',
       }}
@@ -195,11 +195,10 @@ export default function JoinRequests() {
                 ? 'rgba(74, 222, 128, 0.15)'
                 : 'rgba(251, 113, 133, 0.15)',
             color: actionNotice.type === 'success' ? '#4ade80' : '#fb7185',
-            border: `1px solid ${
-              actionNotice.type === 'success'
-                ? 'rgba(74, 222, 128, 0.3)'
-                : 'rgba(251, 113, 133, 0.3)'
-            }`,
+            border: `1px solid ${actionNotice.type === 'success'
+              ? 'rgba(74, 222, 128, 0.3)'
+              : 'rgba(251, 113, 133, 0.3)'
+              }`,
           }}
         >
           {actionNotice.text}
