@@ -83,7 +83,8 @@ def test_faculty_can_approve_pending_student(client):
     response = test_client.post("/faculty/students/20/approve")
 
     assert response.status_code == 200
-    assert student.status == "active"
+    # Approval does NOT activate student; only face enrollment does
+    assert student.status == "pending"
     db.commit.assert_awaited_once()
 
 
@@ -97,3 +98,41 @@ def test_approving_missing_student_returns_404(client):
     response = test_client.post("/faculty/students/999/approve")
 
     assert response.status_code == 404
+
+
+def test_in_person_password_reset(client):
+    test_client, db, _ = client
+    student = make_student(status="active")
+
+    query_result = MagicMock()
+    query_result.scalar_one_or_none.return_value = student
+    db.execute.return_value = query_result
+
+    response = test_client.post(
+        "/faculty/students/20/reset-password",
+        json={"new_password": "NewResetPassword123!"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["message"] == "Password reset successfully"
+    assert data["temporary_password"] == "NewResetPassword123!"
+    assert student.must_change_password is True
+    db.commit.assert_awaited_once()
+
+
+def test_faculty_enroll_student_requires_consent(client):
+    test_client, _, _ = client
+    descriptors = [[0.05] * 128 for _ in range(3)]
+
+    # Consent False should fail validation (pydantic requires consent=True)
+    response = test_client.post(
+        "/faculty/students/20/enroll",
+        json={
+            "descriptors": descriptors,
+            "consent": False,
+        },
+    )
+
+    assert response.status_code == 422
+
