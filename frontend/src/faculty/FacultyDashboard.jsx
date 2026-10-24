@@ -18,6 +18,7 @@ function FacultyDashboard() {
   const [sessionLoading, setSessionLoading] = useState(false);
   const [liveAttendance, setLiveAttendance] = useState({ present_count: 0, records: [] });
   const [errorMessage, setErrorMessage] = useState('');
+  const [pendingJoinCount, setPendingJoinCount] = useState(0);
 
   // Course creation state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -29,14 +30,33 @@ function FacultyDashboard() {
   const qrPollTimerRef = useRef(null);
   const livePollTimerRef = useRef(null);
 
-  // Load faculty's classes on mount
+  // Load faculty's classes & join requests on mount
   useEffect(() => {
     loadClasses();
+    loadPendingJoinRequests();
+
+    const joinPollInterval = setInterval(() => {
+      loadPendingJoinRequests();
+    }, 10000);
+
     return () => {
       clearInterval(qrPollTimerRef.current);
       clearInterval(livePollTimerRef.current);
+      clearInterval(joinPollInterval);
     };
   }, []);
+
+  async function loadPendingJoinRequests() {
+    try {
+      const data = await apiRequest('/faculty/join-requests');
+      if (Array.isArray(data)) {
+        const count = data.filter((r) => r.status === 'pending').length;
+        setPendingJoinCount(count);
+      }
+    } catch {
+      // silently handle
+    }
+  }
 
   async function loadClasses() {
     try {
@@ -305,17 +325,40 @@ function FacultyDashboard() {
               onClick={() => navigate('/faculty/join-requests')}
               style={{
                 padding: '10px 18px',
-                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                background:
+                  pendingJoinCount > 0
+                    ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                    : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                 color: '#ffffff',
                 border: 'none',
                 borderRadius: '8px',
                 fontWeight: 600,
                 fontSize: '14px',
                 cursor: 'pointer',
-                boxShadow: '0 4px 14px rgba(99, 102, 241, 0.3)',
+                boxShadow:
+                  pendingJoinCount > 0
+                    ? '0 4px 14px rgba(245, 158, 11, 0.45)'
+                    : '0 4px 14px rgba(99, 102, 241, 0.3)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
               }}
             >
-              📩 Join Requests
+              <span>📩 Join Requests</span>
+              {pendingJoinCount > 0 && (
+                <span
+                  style={{
+                    background: '#ffffff',
+                    color: '#b45309',
+                    borderRadius: '12px',
+                    padding: '1px 8px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                  }}
+                >
+                  {pendingJoinCount}
+                </span>
+              )}
             </button>
 
             <button
@@ -354,6 +397,51 @@ function FacultyDashboard() {
             </button>
           </div>
         </header>
+
+        {pendingJoinCount > 0 && (
+          <div
+            style={{
+              padding: '14px 20px',
+              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.15))',
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              borderRadius: '12px',
+              marginBottom: '22px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '24px' }}>🔔</span>
+              <div>
+                <strong style={{ color: '#fbbf24', fontSize: '15px' }}>
+                  {pendingJoinCount} Student Course Join Request{pendingJoinCount > 1 ? 's' : ''} Pending!
+                </strong>
+                <p style={{ margin: '3px 0 0', color: '#e2e8f0', fontSize: '13px' }}>
+                  Students have sent requests to join your classes. Review and assign them to an active course.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/faculty/join-requests')}
+              style={{
+                padding: '9px 18px',
+                borderRadius: '8px',
+                border: 'none',
+                background: '#f59e0b',
+                color: '#1e1b4b',
+                fontWeight: 700,
+                fontSize: '13px',
+                cursor: 'pointer',
+              }}
+            >
+              Review Requests ({pendingJoinCount}) →
+            </button>
+          </div>
+        )}
 
         {errorMessage && (
           <div

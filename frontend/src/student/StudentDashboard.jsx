@@ -27,6 +27,7 @@ function StudentDashboard() {
   const [joinSubmitting, setJoinSubmitting] = useState(false);
   const [joinNotice, setJoinNotice] = useState(null); // { type: 'success' | 'error', text: '' }
   const [joinRequests, setJoinRequests] = useState([]);
+  const [instructors, setInstructors] = useState([]);
   const [cancellingId, setCancellingId] = useState(null);
 
   async function loadJoinRequests() {
@@ -37,6 +38,17 @@ function StudentDashboard() {
       }
     } catch {
       // join requests endpoint might fail if token is not ready
+    }
+  }
+
+  async function loadInstructors() {
+    try {
+      const data = await apiRequest("/student/instructors");
+      if (Array.isArray(data)) {
+        setInstructors(data);
+      }
+    } catch {
+      // silently handle
     }
   }
 
@@ -64,13 +76,19 @@ function StudentDashboard() {
   useEffect(() => {
     loadStudentData();
     loadJoinRequests();
+    loadInstructors();
+
+    const pollInterval = setInterval(() => {
+      loadJoinRequests();
+    }, 10000);
+    return () => clearInterval(pollInterval);
   }, []);
 
   async function handleSendJoinRequest(e) {
     e.preventDefault();
     setJoinNotice(null);
 
-    const emailTrimmed = facultyEmail.trim();
+    const emailTrimmed = facultyEmail.trim().toLowerCase();
     if (!emailTrimmed) {
       setJoinNotice({ type: "error", text: "Please enter the faculty member's email address." });
       return;
@@ -86,13 +104,35 @@ function StudentDashboard() {
         }),
       });
 
-      setJoinNotice({
-        type: "success",
-        text: res?.message || "Join request submitted. Waiting for faculty approval.",
-      });
-      setFacultyEmail("");
-      setCourseCode("");
-      await loadJoinRequests();
+      // Reload join requests from backend immediately to verify persistence
+      const freshRequests = await apiRequest("/student/join-requests");
+      if (Array.isArray(freshRequests)) {
+        setJoinRequests(freshRequests);
+        const didSave = freshRequests.some(
+          (r) => r.faculty_email?.toLowerCase() === emailTrimmed && r.status === "pending"
+        );
+
+        if (didSave) {
+          setJoinNotice({
+            type: "success",
+            text: "Join request submitted successfully! It is now visible on the right panel and awaiting faculty approval.",
+          });
+          setFacultyEmail("");
+          setCourseCode("");
+        } else {
+          setJoinNotice({
+            type: "error",
+            text: `Note: '${emailTrimmed}' is not recognized as a registered faculty member in your institution. No request was created. Please select an instructor from the list below.`,
+          });
+        }
+      } else {
+        setJoinNotice({
+          type: "success",
+          text: res?.message || "Join request submitted. Waiting for faculty approval.",
+        });
+        setFacultyEmail("");
+        setCourseCode("");
+      }
     } catch (err) {
       setJoinNotice({
         type: "error",
@@ -390,6 +430,76 @@ function StudentDashboard() {
             </div>
           )}
 
+          {instructors.length > 0 && (
+            <div style={{ marginBottom: "16px" }}>
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "#94a3b8",
+                  marginBottom: "8px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                Available Instructors (Click to select):
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                {instructors.map((inst) => {
+                  const defaultCourse = inst.courses && inst.courses.length > 0 ? inst.courses[0] : null;
+                  const isSelected = facultyEmail.toLowerCase() === inst.email.toLowerCase();
+
+                  return (
+                    <button
+                      key={inst.id}
+                      type="button"
+                      onClick={() => {
+                        setFacultyEmail(inst.email);
+                        if (defaultCourse) {
+                          setCourseCode(defaultCourse.code);
+                        }
+                      }}
+                      style={{
+                        padding: "7px 12px",
+                        borderRadius: "20px",
+                        border: isSelected
+                          ? "1px solid #67e8f9"
+                          : "1px solid rgba(255,255,255,0.15)",
+                        background: isSelected
+                          ? "rgba(103, 232, 249, 0.18)"
+                          : "rgba(255,255,255,0.05)",
+                        color: isSelected ? "#67e8f9" : "#e2e8f0",
+                        fontSize: "12px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        transition: "all 0.2s ease",
+                      }}
+                    >
+                      <span>👤 {inst.name}</span>
+                      <span style={{ color: "#94a3b8", fontSize: "11px" }}>({inst.email})</span>
+                      {defaultCourse && (
+                        <span
+                          style={{
+                            background: "rgba(99, 102, 241, 0.25)",
+                            color: "#a5b4fc",
+                            padding: "2px 7px",
+                            borderRadius: "10px",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {defaultCourse.code}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSendJoinRequest}>
             <div style={{ marginBottom: "14px" }}>
               <label
@@ -405,11 +515,19 @@ function StudentDashboard() {
               <input
                 type="email"
                 required
+                list="registered-faculty-list"
                 placeholder="faculty@example.com"
                 value={facultyEmail}
                 onChange={(e) => setFacultyEmail(e.target.value)}
                 style={{ ...inputStyle, width: "100%" }}
               />
+              <datalist id="registered-faculty-list">
+                {instructors.map((inst) => (
+                  <option key={inst.id} value={inst.email}>
+                    {inst.name} ({inst.courses?.map((c) => c.code).join(", ") || "No courses"})
+                  </option>
+                ))}
+              </datalist>
             </div>
 
             <div style={{ marginBottom: "18px" }}>

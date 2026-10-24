@@ -201,3 +201,48 @@ async def cancel_join_request(
         status="cancelled",
         message="Join request cancelled successfully",
     )
+
+
+@router.get(
+    "/instructors",
+    status_code=status.HTTP_200_OK,
+)
+async def list_available_instructors(
+    student: User = Depends(require_role("student")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List available faculty members and their courses in this tenant."""
+    query = (
+        select(User, Course)
+        .outerjoin(
+            Course,
+            (Course.faculty_id == User.id) & (Course.tenant_id == student.tenant_id),
+        )
+        .where(
+            User.tenant_id == student.tenant_id,
+            User.role == "faculty",
+            User.status == "active",
+        )
+        .order_by(User.name.asc(), Course.code.asc())
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    faculty_map = {}
+    for user, course in rows:
+        if user.id not in faculty_map:
+            faculty_map[user.id] = {
+                "id": user.id,
+                "name": user.name or user.email,
+                "email": user.email,
+                "courses": [],
+            }
+        if course:
+            faculty_map[user.id]["courses"].append({
+                "id": course.id,
+                "name": course.name,
+                "code": course.code,
+            })
+
+    return list(faculty_map.values())
+
