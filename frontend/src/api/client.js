@@ -36,24 +36,28 @@ export async function apiRequest(endpoint, options = {}) {
   }
 
   if (!response.ok) {
+    const serverMessage =
+      typeof data === 'object' && data !== null
+        ? data.detail || data.message || data.error
+        : null;
+
     if (response.status === 401) {
       sessionStorage.removeItem('token');
       sessionStorage.removeItem('isLoggedIn');
 
-      throw new Error('Session expired or unauthorized. Please log in again.');
+      throw new Error(
+        serverMessage || 'Session expired or unauthorized. Please log in again.'
+      );
     }
 
     if (response.status === 403) {
-      throw new Error('You do not have permission to perform this action.');
+      throw new Error(
+        serverMessage || 'You do not have permission to perform this action.'
+      );
     }
 
-    const message =
-      typeof data === 'object' && data !== null
-        ? data.message || data.error
-        : null;
-
     throw new Error(
-      message || `Request failed with status ${response.status}.`
+      serverMessage || `Request failed with status ${response.status}.`
     );
   }
 

@@ -1,13 +1,135 @@
-
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { apiRequest } from "../api/client.js";
 
 function StudentDashboard() {
-  const attendance = [
-    { subject: "Data Structures", date: "09 Oct 2026", status: "Present" },
-    { subject: "Computer Networks", date: "08 Oct 2026", status: "Present" },
-    { subject: "Operating Systems", date: "07 Oct 2026", status: "Absent" },
-    { subject: "Design and Analysis of Algorithms", date: "06 Oct 2026", status: "Present" },
-  ];
+  const navigate = useNavigate();
+
+  const [loading, setLoading] = useState(true);
+  const [studentInfo, setStudentInfo] = useState({
+    name: "Student",
+    roll_no: "",
+    status: "pending",
+    has_face_enrollment: false,
+  });
+  const [metrics, setMetrics] = useState({
+    totalClasses: 0,
+    classesAttended: 0,
+    classesMissed: 0,
+    percentage: 100,
+  });
+  const [records, setRecords] = useState([]);
+  const [statusMessage, setStatusMessage] = useState("Loading your attendance...");
+
+  // Join course state
+  const [facultyEmail, setFacultyEmail] = useState("");
+  const [courseCode, setCourseCode] = useState("");
+  const [joinSubmitting, setJoinSubmitting] = useState(false);
+  const [joinNotice, setJoinNotice] = useState(null); // { type: 'success' | 'error', text: '' }
+  const [joinRequests, setJoinRequests] = useState([]);
+  const [cancellingId, setCancellingId] = useState(null);
+
+  async function loadJoinRequests() {
+    try {
+      const data = await apiRequest("/student/join-requests");
+      if (Array.isArray(data)) {
+        setJoinRequests(data);
+      }
+    } catch {
+      // join requests endpoint might fail if token is not ready
+    }
+  }
+
+  async function loadStudentData() {
+    try {
+      const data = await apiRequest("/attendance/student/me");
+      if (data && data.student) {
+        setStudentInfo(data.student);
+        setMetrics({
+          totalClasses: data.total_classes ?? 0,
+          classesAttended: data.classes_attended ?? 0,
+          classesMissed: data.classes_missed ?? 0,
+          percentage: data.attendance_percentage ?? 100,
+        });
+        setRecords(Array.isArray(data.records) ? data.records : []);
+        setStatusMessage("Live data synced from server.");
+      }
+    } catch {
+      setStatusMessage("Connected to server.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadStudentData();
+    loadJoinRequests();
+  }, []);
+
+  async function handleSendJoinRequest(e) {
+    e.preventDefault();
+    setJoinNotice(null);
+
+    const emailTrimmed = facultyEmail.trim();
+    if (!emailTrimmed) {
+      setJoinNotice({ type: "error", text: "Please enter the faculty member's email address." });
+      return;
+    }
+
+    setJoinSubmitting(true);
+    try {
+      const res = await apiRequest("/student/join-requests", {
+        method: "POST",
+        body: JSON.stringify({
+          faculty_email: emailTrimmed,
+          course_code: courseCode.trim() || undefined,
+        }),
+      });
+
+      setJoinNotice({
+        type: "success",
+        text: res?.message || "Join request submitted. Waiting for faculty approval.",
+      });
+      setFacultyEmail("");
+      setCourseCode("");
+      await loadJoinRequests();
+    } catch (err) {
+      setJoinNotice({
+        type: "error",
+        text: err?.message || "Could not submit join request. Please try again.",
+      });
+    } finally {
+      setJoinSubmitting(false);
+    }
+  }
+
+  async function handleCancelRequest(id) {
+    if (!window.confirm("Are you sure you want to cancel this pending join request?")) {
+      return;
+    }
+
+    setCancellingId(id);
+    try {
+      await apiRequest(`/student/join-requests/${id}`, {
+        method: "DELETE",
+      });
+      await loadJoinRequests();
+    } catch (err) {
+      alert(err?.message || "Failed to cancel join request.");
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  function handleScanClick() {
+    if (!studentInfo.has_face_enrollment || studentInfo.status !== "active") {
+      alert(
+        "Scan Unavailable:\n\nYour account is pending face enrollment. Please attend class and have your instructor complete your face enrollment before scanning attendance QR codes."
+      );
+      return;
+    }
+    navigate("/camera-test");
+  }
 
   const cardStyle = {
     background: "rgba(255,255,255,0.06)",
@@ -17,6 +139,46 @@ function StudentDashboard() {
     backdropFilter: "blur(12px)",
   };
 
+  const inputStyle = {
+    padding: "12px 14px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.15)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#ffffff",
+    fontSize: "14px",
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  // Determine enrollment workflow guidance step
+  let workflowStep = {
+    title: "Step 1: Join a Course",
+    desc: "Enter your faculty instructor's email and course code below to request admission to the class.",
+    color: "#67e8f9",
+  };
+  const hasApproved = joinRequests.some((r) => r.status === "approved");
+  const hasPending = joinRequests.some((r) => r.status === "pending");
+
+  if (studentInfo.status === "active" && studentInfo.has_face_enrollment) {
+    workflowStep = {
+      title: "Step 4: Ready to Scan",
+      desc: "Your biometric enrollment is complete and verified. Click 'Scan QR / Mark Attendance' during lectures.",
+      color: "#4ade80",
+    };
+  } else if (hasApproved) {
+    workflowStep = {
+      title: "Step 3: Waiting for Face Enrollment in Class",
+      desc: "Your instructor approved your join request! Meet your instructor during class to complete one-time face enrollment.",
+      color: "#fbbf24",
+    };
+  } else if (hasPending) {
+    workflowStep = {
+      title: "Step 2: Waiting for Faculty Approval",
+      desc: "Your join request has been sent to your instructor. Once approved, you will proceed to in-class face enrollment.",
+      color: "#818cf8",
+    };
+  }
+
   return (
     <div
       style={{
@@ -24,7 +186,7 @@ function StudentDashboard() {
         padding: "30px",
         boxSizing: "border-box",
         color: "#ffffff",
-        fontFamily: "Arial, sans-serif",
+        fontFamily: "'Inter', Arial, sans-serif",
         background:
           "radial-gradient(circle at top right, #302060, transparent 40%), linear-gradient(135deg, #080d20, #11152e 60%, #090c1b)",
       }}
@@ -37,93 +199,401 @@ function StudentDashboard() {
           alignItems: "center",
           flexWrap: "wrap",
           gap: "15px",
-          marginBottom: "35px",
+          marginBottom: "30px",
         }}
       >
         <div>
           <h1 style={{ margin: 0, color: "#67e8f9", fontSize: "28px" }}>
             ZeroProxy
           </h1>
-          <p style={{ color: "#9ca3af", marginBottom: 0 }}>
+          <p style={{ color: "#9ca3af", marginBottom: 0, fontSize: "14px" }}>
             Smart Attendance System
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            sessionStorage.clear();
-            window.location.href = "/login";
-          }}
-          style={{
-            padding: "11px 20px",
-            borderRadius: "10px",
-            border: "1px solid #67e8f9",
-            background: "transparent",
-            color: "#67e8f9",
-            cursor: "pointer",
-          }}
-        >
-          Logout
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <button
+            type="button"
+            onClick={handleScanClick}
+            style={{
+              padding: "11px 22px",
+              borderRadius: "10px",
+              border: "none",
+              background:
+                studentInfo.has_face_enrollment && studentInfo.status === "active"
+                  ? "linear-gradient(135deg, #06b6d4, #3b82f6)"
+                  : "rgba(255,255,255,0.12)",
+              color: "#ffffff",
+              fontWeight: 600,
+              fontSize: "14px",
+              cursor: "pointer",
+              boxShadow:
+                studentInfo.has_face_enrollment && studentInfo.status === "active"
+                  ? "0 4px 14px rgba(6, 182, 212, 0.4)"
+                  : "none",
+            }}
+          >
+            📸 Scan QR / Mark Attendance
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              sessionStorage.clear();
+              navigate("/login", { replace: true });
+            }}
+            style={{
+              padding: "11px 20px",
+              borderRadius: "10px",
+              border: "1px solid rgba(103, 232, 249, 0.4)",
+              background: "transparent",
+              color: "#67e8f9",
+              cursor: "pointer",
+              fontSize: "14px",
+            }}
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
-      {/* Welcome */}
-      <section style={{ marginBottom: "30px" }}>
-        <p style={{ color: "#67e8f9", marginBottom: "8px" }}>
-          STUDENT PORTAL
-        </p>
-        <h2 style={{ fontSize: "30px", margin: "0 0 10px" }}>
-          Welcome, Student!
-        </h2>
-        <p style={{ color: "#a5acc5", margin: 0 }}>
-          Track your attendance and stay updated with your classes.
-        </p>
+      {/* Welcome & Status Bar */}
+      <section
+        style={{
+          marginBottom: "25px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+          flexWrap: "wrap",
+          gap: "15px",
+        }}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+            <span
+              style={{
+                color: "#67e8f9",
+                fontSize: "12px",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              STUDENT PORTAL
+            </span>
+
+            {studentInfo.has_face_enrollment && studentInfo.status === "active" ? (
+              <span
+                style={{
+                  fontSize: "11px",
+                  background: "rgba(74, 222, 128, 0.15)",
+                  color: "#4ade80",
+                  padding: "3px 8px",
+                  borderRadius: "12px",
+                  border: "1px solid rgba(74, 222, 128, 0.3)",
+                }}
+              >
+                ● Active & Enrolled
+              </span>
+            ) : (
+              <span
+                style={{
+                  fontSize: "11px",
+                  background: "rgba(251, 191, 36, 0.15)",
+                  color: "#fbbf24",
+                  padding: "3px 8px",
+                  borderRadius: "12px",
+                  border: "1px solid rgba(251, 191, 36, 0.3)",
+                }}
+              >
+                ▲ Face Enrollment Pending
+              </span>
+            )}
+          </div>
+
+          <h2 style={{ fontSize: "28px", margin: "0 0 6px", fontWeight: 700 }}>
+            Welcome, {studentInfo.name || "Student"}!
+          </h2>
+
+          <p style={{ color: "#a5acc5", margin: 0, fontSize: "14px" }}>
+            {studentInfo.roll_no ? `Roll No: ${studentInfo.roll_no} • ` : ""}
+            Track your verified attendance and scan rotating lecture QR codes.
+          </p>
+        </div>
+
+        <div style={{ fontSize: "13px", color: "#67e8f9", background: "rgba(103, 232, 249, 0.08)", padding: "8px 14px", borderRadius: "8px" }}>
+          Backend Status: <strong>{statusMessage}</strong>
+        </div>
       </section>
 
-      {/* Attendance Summary */}
+      {/* Guided Next-Step Banner */}
+      <section
+        style={{
+          ...cardStyle,
+          marginBottom: "25px",
+          borderLeft: `5px solid ${workflowStep.color}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "15px",
+        }}
+      >
+        <div>
+          <span style={{ fontSize: "12px", fontWeight: 700, color: workflowStep.color, textTransform: "uppercase" }}>
+            {workflowStep.title}
+          </span>
+          <p style={{ margin: "4px 0 0", fontSize: "14px", color: "#e2e8f0" }}>
+            {workflowStep.desc}
+          </p>
+        </div>
+      </section>
+
+      {/* Join Course Form & Pending Requests */}
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
+          gap: "25px",
+          marginBottom: "35px",
+        }}
+      >
+        {/* Form: Join a Course */}
+        <div style={cardStyle}>
+          <h3 style={{ margin: "0 0 6px", fontSize: "18px", color: "#67e8f9" }}>
+            ➕ Join a Course / Faculty
+          </h3>
+          <p style={{ color: "#a5acc5", fontSize: "13px", margin: "0 0 18px" }}>
+            Ask an instructor to add you to their class roster by entering their email address.
+          </p>
+
+          {joinNotice && (
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                marginBottom: "16px",
+                background:
+                  joinNotice.type === "success"
+                    ? "rgba(74, 222, 128, 0.15)"
+                    : "rgba(251, 113, 133, 0.15)",
+                color: joinNotice.type === "success" ? "#4ade80" : "#fb7185",
+                border: `1px solid ${
+                  joinNotice.type === "success"
+                    ? "rgba(74, 222, 128, 0.3)"
+                    : "rgba(251, 113, 133, 0.3)"
+                }`,
+              }}
+            >
+              {joinNotice.text}
+            </div>
+          )}
+
+          <form onSubmit={handleSendJoinRequest}>
+            <div style={{ marginBottom: "14px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "13px",
+                  color: "#cbd5e1",
+                  marginBottom: "6px",
+                }}
+              >
+                Faculty Email Address <span style={{ color: "#fb7185" }}>*</span>
+              </label>
+              <input
+                type="email"
+                required
+                placeholder="faculty@example.com"
+                value={facultyEmail}
+                onChange={(e) => setFacultyEmail(e.target.value)}
+                style={{ ...inputStyle, width: "100%" }}
+              />
+            </div>
+
+            <div style={{ marginBottom: "18px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "13px",
+                  color: "#cbd5e1",
+                  marginBottom: "6px",
+                }}
+              >
+                Course Code (Optional, e.g. CS101)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. CS101 or leave blank"
+                value={courseCode}
+                onChange={(e) => setCourseCode(e.target.value)}
+                style={{ ...inputStyle, width: "100%" }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={joinSubmitting}
+              style={{
+                width: "100%",
+                padding: "12px",
+                borderRadius: "8px",
+                border: "none",
+                background: "linear-gradient(135deg, #06b6d4, #6366f1)",
+                color: "#ffffff",
+                fontWeight: 600,
+                fontSize: "14px",
+                cursor: joinSubmitting ? "not-allowed" : "pointer",
+                opacity: joinSubmitting ? 0.7 : 1,
+              }}
+            >
+              {joinSubmitting ? "Sending Request..." : "Send Join Request"}
+            </button>
+          </form>
+        </div>
+
+        {/* List: My Join Requests */}
+        <div style={cardStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+              📋 My Course Join Requests
+            </h3>
+            <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+              {joinRequests.length} total
+            </span>
+          </div>
+
+          <div style={{ maxHeight: "290px", overflowY: "auto" }}>
+            {joinRequests.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {joinRequests.map((req) => {
+                  const statusColors = {
+                    pending: { bg: "rgba(251, 191, 36, 0.15)", text: "#fbbf24" },
+                    approved: { bg: "rgba(74, 222, 128, 0.15)", text: "#4ade80" },
+                    rejected: { bg: "rgba(251, 113, 133, 0.15)", text: "#fb7185" },
+                    cancelled: { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" },
+                  };
+                  const color = statusColors[req.status] || statusColors.pending;
+
+                  return (
+                    <div
+                      key={req.id}
+                      style={{
+                        padding: "12px 14px",
+                        borderRadius: "10px",
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: "10px",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                          {req.faculty_name || req.faculty_email}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#9ca3af" }}>
+                          {req.faculty_email} {req.course_code ? `• Code: ${req.course_code}` : ""} {req.class_name ? `• ${req.class_name}` : ""}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                          Requested: {new Date(req.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            padding: "3px 8px",
+                            borderRadius: "12px",
+                            background: color.bg,
+                            color: color.text,
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {req.status}
+                        </span>
+
+                        {req.status === "pending" && (
+                          <button
+                            type="button"
+                            disabled={cancellingId === req.id}
+                            onClick={() => handleCancelRequest(req.id)}
+                            style={{
+                              padding: "4px 8px",
+                              fontSize: "11px",
+                              borderRadius: "6px",
+                              border: "1px solid rgba(251, 113, 133, 0.4)",
+                              background: "rgba(251, 113, 133, 0.1)",
+                              color: "#fb7185",
+                              cursor: "pointer",
+                            }}
+                          >
+                            {cancellingId === req.id ? "..." : "Cancel"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p style={{ color: "#9ca3af", fontSize: "13px", padding: "20px 0", textAlign: "center" }}>
+                No join requests sent yet. Use the form on the left to request course admission.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Attendance Summary Cards */}
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
           gap: "20px",
           marginBottom: "35px",
         }}
       >
         <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0 }}>Total Classes</p>
-          <h2 style={{ fontSize: "32px", margin: "10px 0" }}>40</h2>
-          <p style={{ color: "#67e8f9", marginBottom: 0 }}>
-            Classes conducted
-          </p>
-        </div>
-
-        <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0 }}>Classes Attended</p>
-          <h2 style={{ fontSize: "32px", margin: "10px 0", color: "#4ade80" }}>
-            34
+          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Total Classes</p>
+          <h2 style={{ fontSize: "34px", margin: "10px 0", fontWeight: 700 }}>
+            {metrics.totalClasses}
           </h2>
-          <p style={{ color: "#a5acc5", marginBottom: 0 }}>
-            Present sessions
+          <p style={{ color: "#67e8f9", marginBottom: 0, fontSize: "13px" }}>
+            Conducted sessions
           </p>
         </div>
 
         <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0 }}>Classes Missed</p>
-          <h2 style={{ fontSize: "32px", margin: "10px 0", color: "#fb7185" }}>
-            6
+          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Classes Attended</p>
+          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#4ade80", fontWeight: 700 }}>
+            {metrics.classesAttended}
           </h2>
-          <p style={{ color: "#a5acc5", marginBottom: 0 }}>
-            Absent sessions
+          <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "13px" }}>
+            Verified present
           </p>
         </div>
 
         <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0 }}>
+          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Classes Missed</p>
+          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#fb7185", fontWeight: 700 }}>
+            {metrics.classesMissed}
+          </h2>
+          <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "13px" }}>
+            Absent / unverified
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>
             Attendance Percentage
           </p>
-          <h2 style={{ fontSize: "32px", margin: "10px 0", color: "#67e8f9" }}>
-            85%
+          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#67e8f9", fontWeight: 700 }}>
+            {metrics.percentage}%
           </h2>
           <div
             style={{
@@ -135,78 +605,114 @@ function StudentDashboard() {
           >
             <div
               style={{
-                width: "85%",
+                width: `${Math.min(100, Math.max(0, metrics.percentage))}%`,
                 height: "100%",
                 background: "linear-gradient(90deg, #06b6d4, #818cf8)",
                 borderRadius: "10px",
+                transition: "width 0.4s ease",
               }}
             />
           </div>
         </div>
       </section>
 
-      {/* Recent Attendance */}
+      {/* Attendance History */}
       <section style={cardStyle}>
-        <h2 style={{ marginTop: 0, marginBottom: "8px" }}>
-          Recent Attendance
-        </h2>
-        <p style={{ color: "#a5acc5", marginTop: 0, marginBottom: "25px" }}>
-          Your latest class attendance records
-        </p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "20px" }}>
+          <div>
+            <h2 style={{ marginTop: 0, marginBottom: "6px", fontSize: "20px" }}>
+              Attendance History
+            </h2>
+            <p style={{ color: "#a5acc5", margin: 0, fontSize: "13px" }}>
+              Verified biometric and session attendance records from the server
+            </p>
+          </div>
+
+          <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+            {records.length} record(s) logged
+          </span>
+        </div>
 
         <div style={{ overflowX: "auto" }}>
           <table
             style={{
               width: "100%",
               borderCollapse: "collapse",
-              minWidth: "450px",
+              minWidth: "500px",
               textAlign: "left",
             }}
           >
             <thead>
-              <tr style={{ color: "#67e8f9" }}>
-                <th style={{ padding: "14px 10px" }}>Subject</th>
-                <th style={{ padding: "14px 10px" }}>Date</th>
-                <th style={{ padding: "14px 10px" }}>Status</th>
+              <tr style={{ color: "#67e8f9", fontSize: "13px" }}>
+                <th style={{ padding: "12px 10px" }}>Subject</th>
+                <th style={{ padding: "12px 10px" }}>Code</th>
+                <th style={{ padding: "12px 10px" }}>Date & Time</th>
+                <th style={{ padding: "12px 10px" }}>Verification Type</th>
+                <th style={{ padding: "12px 10px" }}>Status</th>
               </tr>
             </thead>
 
             <tbody>
-              {attendance.map((item, index) => (
-                <tr
-                  key={index}
-                  style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
-                >
-                  <td style={{ padding: "16px 10px" }}>{item.subject}</td>
-                  <td style={{ padding: "16px 10px", color: "#a5acc5" }}>
-                    {item.date}
-                  </td>
-                  <td style={{ padding: "16px 10px" }}>
-                    <span
-                      style={{
-                        color:
-                          item.status === "Present" ? "#4ade80" : "#fb7185",
-                        background:
-                          item.status === "Present"
-                            ? "rgba(74,222,128,0.1)"
-                            : "rgba(251,113,133,0.1)",
-                        padding: "6px 12px",
-                        borderRadius: "20px",
-                        fontSize: "13px",
-                      }}
-                    >
-                      {item.status}
-                    </span>
+              {records.length > 0 ? (
+                records.map((item) => (
+                  <tr
+                    key={item.id}
+                    style={{ borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: "14px" }}
+                  >
+                    <td style={{ padding: "14px 10px", fontWeight: 500 }}>{item.subject}</td>
+                    <td style={{ padding: "14px 10px", color: "#a5acc5" }}>{item.code}</td>
+                    <td style={{ padding: "14px 10px", color: "#a5acc5" }}>
+                      {item.date} {item.time ? `• ${item.time}` : ""}
+                    </td>
+                    <td style={{ padding: "14px 10px" }}>
+                      <span
+                        style={{
+                          fontSize: "12px",
+                          background: item.source === "override" ? "rgba(251, 191, 36, 0.15)" : "rgba(6, 182, 212, 0.15)",
+                          color: item.source === "override" ? "#fbbf24" : "#67e8f9",
+                          padding: "4px 8px",
+                          borderRadius: "6px",
+                        }}
+                      >
+                        {item.source === "override" ? "Faculty Override" : "Facial + QR Scan"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "14px 10px" }}>
+                      <span
+                        style={{
+                          color: "#4ade80",
+                          background: "rgba(74,222,128,0.12)",
+                          padding: "5px 12px",
+                          borderRadius: "20px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                        }}
+                      >
+                        ● {item.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    colSpan={5}
+                    style={{
+                      padding: "30px 10px",
+                      textAlign: "center",
+                      color: "#9ca3af",
+                      fontSize: "14px",
+                    }}
+                  >
+                    {loading
+                      ? "Fetching records..."
+                      : "No attendance records recorded yet. Once enrolled in a class, click 'Scan QR / Mark Attendance' during class sessions."}
                   </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
-
-        <p style={{ color: "#818ba8", fontSize: "12px", marginBottom: 0 }}>
-          Demo data — real attendance will be connected to the backend later.
-        </p>
       </section>
     </div>
   );

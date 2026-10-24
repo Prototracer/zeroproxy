@@ -6,6 +6,7 @@ import Register from './auth/Register.jsx';
 import FacultyDashboard from './faculty/FacultyDashboard.jsx';
 import StudentDashboard from './student/StudentDashboard.jsx';
 import Enroll from './faculty/Enroll.jsx';
+import JoinRequests from './faculty/JoinRequests.jsx';
 import CameraTest from './student/CameraTest.jsx';
 
 function ProtectedFaculty() {
@@ -44,6 +45,18 @@ function ProtectedEnroll() {
   return <Enroll />;
 }
 
+function ProtectedJoinRequests() {
+  const token = sessionStorage.getItem('token');
+  const isLoggedIn = sessionStorage.getItem('isLoggedIn');
+  const role = (sessionStorage.getItem('role') || '').toLowerCase();
+
+  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <JoinRequests />;
+}
+
 function App() {
   return (
     <Routes>
@@ -51,6 +64,7 @@ function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/faculty" element={<ProtectedFaculty />} />
+      <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />
       <Route path="/faculty/enroll" element={<ProtectedEnroll />} />
       <Route path="/student" element={<ProtectedStudent />} />
       <Route path="/camera-test" element={<CameraTest />} />

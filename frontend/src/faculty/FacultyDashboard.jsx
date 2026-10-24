@@ -1,102 +1,201 @@
-
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiRequest } from '../api/client.js';
 import { QRCodeSVG } from 'qrcode.react';
+import { apiRequest } from '../api/client.js';
 
 function FacultyDashboard() {
   const navigate = useNavigate();
 
-  const [classes, setClasses] = useState([
-    {
-      id: 1,
-      name: 'Design and Analysis of Algorithms',
-      code: 'CS301',
-      semester: 'Semester 3',
-      session: 'No active session',
-    },
-    {
-      id: 2,
-      name: 'Computer Networks',
-      code: 'CS302',
-      semester: 'Semester 3',
-      session: 'No active session',
-    },
-    {
-      id: 3,
-      name: 'Operating Systems',
-      code: 'CS303',
-      semester: 'Semester 3',
-      session: 'No active session',
-    },
-  ]);
+  // Courses state
+  const [classes, setClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [classMessage, setClassMessage] = useState('Loading your courses from backend...');
 
-  const [classMessage, setClassMessage] = useState(
-    'Showing sample classes.'
-  );
+  // Live Session & Rotating QR state
+  const [activeSession, setActiveSession] = useState(null); // { id, course_id, status }
+  const [qrPayload, setQrPayload] = useState(null); // { session_id, window, mac, expires_in_ms }
+  const [qrCountdown, setQrCountdown] = useState(5);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [liveAttendance, setLiveAttendance] = useState({ present_count: 0, records: [] });
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const [qrGenerated, setQrGenerated] = useState(false);
-  const [selectedClass, setSelectedClass] = useState('');
-  const [student, setStudent] = useState('');
-  const [attendanceStatus, setAttendanceStatus] = useState('present');
-  const [attendanceMessage, setAttendanceMessage] = useState('');
-
-  // Add Course form state
+  // Course creation state
   const [showAddForm, setShowAddForm] = useState(false);
   const [courseName, setCourseName] = useState('');
   const [courseCode, setCourseCode] = useState('');
   const [courseSemester, setCourseSemester] = useState('Semester 3');
   const [courseMessage, setCourseMessage] = useState('');
 
+  const qrPollTimerRef = useRef(null);
+  const livePollTimerRef = useRef(null);
+
+  // Load faculty's classes on mount
   useEffect(() => {
-    async function loadClasses() {
-      try {
-        const data = await apiRequest('/faculty/classes');
-
-        if (Array.isArray(data)) {
-          setClasses(data);
-          setClassMessage('Classes loaded from the backend.');
-        } else if (Array.isArray(data?.classes)) {
-          setClasses(data.classes);
-          setClassMessage('Classes loaded from the backend.');
-        } else {
-          setClassMessage(
-            'Backend response format is not recognized. Showing sample classes.'
-          );
-        }
-      } catch {
-        setClassMessage(
-          'Backend unavailable. Showing sample classes.'
-        );
-      }
-    }
-
     loadClasses();
+    return () => {
+      clearInterval(qrPollTimerRef.current);
+      clearInterval(livePollTimerRef.current);
+    };
   }, []);
 
-  const selectedClassDetails = classes.find(
-    (item) => String(item.id) === selectedClass
-  );
+  async function loadClasses() {
+    try {
+      const data = await apiRequest('/faculty/classes');
+      if (Array.isArray(data)) {
+        setClasses(data);
+        setClassMessage(data.length > 0 ? '' : 'No courses found. Click "+ Add Course" to create your first class.');
+        if (data.length > 0 && !selectedClassId) {
+          setSelectedClassId(String(data[0].id));
+        }
 
-  function handleLogout() {
-    sessionStorage.removeItem('isLoggedIn');
-    sessionStorage.removeItem('token');
-    sessionStorage.removeItem('role');
-    navigate('/login', { replace: true });
+        // Auto-resume active session if any course has one running
+        const runningCourse = data.find((c) => c.active_session_id != null);
+        if (runningCourse && !activeSession) {
+          resumeSession(runningCourse, runningCourse.active_session_id);
+        }
+      } else {
+        setClassMessage('Could not parse classes from backend.');
+      }
+    } catch (err) {
+      setClassMessage('Backend offline or unauthorized. Please check backend connection.');
+    }
   }
 
-  function handleGenerateQR() {
-    if (!selectedClassDetails) {
-      alert('Please select a class first.');
+  async function resumeSession(course, sessionId) {
+    setSelectedClassId(String(course.id));
+    setActiveSession({ id: sessionId, course_id: course.id, status: 'active' });
+    await fetchRotatingQR(sessionId);
+    startLiveAttendancePoller(sessionId);
+  }
+
+  // Selected class details helper
+  const selectedClass = classes.find((c) => String(c.id) === String(selectedClassId));
+
+  // ── Session & Dynamic QR Management ──────────────────────────────────────
+
+  async function startLiveSession() {
+    if (!selectedClass) {
+      setErrorMessage('Please select a course to start a live session.');
       return;
     }
 
-    setQrGenerated(true);
+    setErrorMessage('');
+    setSessionLoading(true);
+
+    try {
+      let session;
+      if (selectedClass.active_session_id) {
+        // Reuse existing active session for this course
+        session = { id: selectedClass.active_session_id, course_id: selectedClass.id, status: 'active' };
+      } else {
+        // 1. Create active session in database
+        session = await apiRequest('/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ course_id: selectedClass.id }),
+        });
+      }
+
+      setActiveSession(session);
+
+      // 2. Fetch first rotating QR token
+      await fetchRotatingQR(session.id);
+
+      // 3. Start live attendance poller
+      startLiveAttendancePoller(session.id);
+      loadClasses();
+    } catch (err) {
+      setErrorMessage(err.message || 'Failed to start session on backend.');
+    } finally {
+      setSessionLoading(false);
+    }
   }
 
-  function handleAddCourse(event) {
-    event.preventDefault();
+  async function fetchRotatingQR(sessionId) {
+    try {
+      const tokenData = await apiRequest(`/sessions/${sessionId}/qr`);
+      setQrPayload(tokenData);
 
+      const ttlSeconds = Math.max(1, Math.round((tokenData.expires_in_ms || 5000) / 1000));
+      setQrCountdown(ttlSeconds);
+
+      // Schedule next QR refresh exactly before this window expires
+      clearTimeout(qrPollTimerRef.current);
+      const refreshDelay = Math.max(1500, (tokenData.expires_in_ms || 4000) - 300);
+
+      qrPollTimerRef.current = setTimeout(() => {
+        fetchRotatingQR(sessionId);
+      }, refreshDelay);
+    } catch (err) {
+      if (err.message && err.message.includes('session_ended')) {
+        endSessionLocal();
+      } else {
+        // Retry in 2 seconds on transient error
+        clearTimeout(qrPollTimerRef.current);
+        qrPollTimerRef.current = setTimeout(() => {
+          fetchRotatingQR(sessionId);
+        }, 2000);
+      }
+    }
+  }
+
+  // Tick countdown second by second for user visual feedback
+  useEffect(() => {
+    if (!activeSession || !qrPayload) return;
+
+    const timer = setInterval(() => {
+      setQrCountdown((prev) => (prev > 1 ? prev - 1 : 1));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeSession, qrPayload]);
+
+  function startLiveAttendancePoller(sessionId) {
+    clearInterval(livePollTimerRef.current);
+
+    async function poll() {
+      try {
+        const live = await apiRequest(`/sessions/${sessionId}/live`);
+        if (live) {
+          setLiveAttendance(live);
+        }
+      } catch {
+        // ignore occasional poll latency
+      }
+    }
+
+    poll();
+    livePollTimerRef.current = setInterval(poll, 3000);
+  }
+
+  async function endLiveSession() {
+    if (!activeSession) return;
+
+    const confirmEnd = window.confirm('Are you sure you want to end this attendance session? The QR code will be closed immediately.');
+    if (!confirmEnd) return;
+
+    try {
+      await apiRequest(`/sessions/${activeSession.id}/end`, {
+        method: 'POST',
+      });
+    } catch {
+      // proceed with local cleanup
+    }
+
+    endSessionLocal();
+    loadClasses();
+  }
+
+  function endSessionLocal() {
+    clearInterval(qrPollTimerRef.current);
+    clearInterval(livePollTimerRef.current);
+    setActiveSession(null);
+    setQrPayload(null);
+  }
+
+  // ── Course Creation ──────────────────────────────────────────────────────
+
+  async function handleAddCourse(event) {
+    event.preventDefault();
     const name = courseName.trim();
     const code = courseCode.trim().toUpperCase();
 
@@ -105,513 +204,652 @@ function FacultyDashboard() {
       return;
     }
 
-    const duplicate = classes.some(
-      (item) =>
-        String(item.code).toLowerCase() === code.toLowerCase()
-    );
+    try {
+      const created = await apiRequest('/faculty/classes', {
+        method: 'POST',
+        body: JSON.stringify({ name, code, semester: courseSemester }),
+      });
 
-    if (duplicate) {
-      setCourseMessage('A course with this code already exists.');
-      return;
+      setClasses((prev) => [...prev, created]);
+      setSelectedClassId(String(created.id));
+      setCourseName('');
+      setCourseCode('');
+      setCourseMessage(`Course ${name} (${code}) created successfully.`);
+      setShowAddForm(false);
+    } catch (err) {
+      setCourseMessage(err.message || 'Failed to add course.');
     }
-
-    const newCourse = {
-      id: `local-${Date.now()}`,
-      name,
-      code,
-      semester: courseSemester,
-      session: 'No active session',
-    };
-
-    setClasses((previousClasses) => [
-      ...previousClasses,
-      newCourse,
-    ]);
-
-    setCourseName('');
-    setCourseCode('');
-    setCourseSemester('Semester 3');
-    setCourseMessage(`${name} added successfully.`);
-    setShowAddForm(false);
   }
 
-  function handleDeleteCourse(course) {
-    const confirmed = window.confirm(
-      `Are you sure you want to delete ${course.name}?`
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    setClasses((previousClasses) =>
-      previousClasses.filter(
-        (item) => String(item.id) !== String(course.id)
-      )
-    );
-
-    if (String(selectedClass) === String(course.id)) {
-      setSelectedClass('');
-      setQrGenerated(false);
-    }
-
-    setCourseMessage(`${course.name} deleted from this demo.`);
+  function handleLogout() {
+    endSessionLocal();
+    sessionStorage.clear();
+    navigate('/login', { replace: true });
   }
 
-  function handleManualAttendance() {
-    if (!student) {
-      setAttendanceMessage('Please select a student.');
-      return;
-    }
-
-    setAttendanceMessage(
-      `Demo: ${student} marked ${attendanceStatus.toUpperCase()}. This change is not saved to the backend.`
-    );
-  }
-
+  // Common high-contrast dark card style
   const cardStyle = {
-    background: '#ffffff',
-    padding: '20px',
-    borderRadius: '12px',
-    marginTop: '24px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-  };
-
-  const buttonStyle = {
-    background: '#2563eb',
+    background: 'rgba(15, 23, 42, 0.75)',
+    border: '1px solid rgba(148, 163, 184, 0.18)',
+    borderRadius: '18px',
+    padding: '24px',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.35)',
+    backdropFilter: 'blur(14px)',
+    marginBottom: '26px',
     color: '#ffffff',
-    border: 'none',
-    padding: '12px 18px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-  };
-
-  const selectStyle = {
-    display: 'block',
-    width: '100%',
-    maxWidth: '400px',
-    boxSizing: 'border-box',
-    padding: '12px',
-    marginTop: '8px',
-    marginBottom: '16px',
-    border: '1px solid #d1d5db',
-    borderRadius: '6px',
   };
 
   const inputStyle = {
-    ...selectStyle,
-    maxWidth: '500px',
+    width: '100%',
+    padding: '12px 14px',
+    background: 'rgba(30, 41, 59, 0.8)',
+    border: '1px solid rgba(148, 163, 184, 0.25)',
+    borderRadius: '8px',
+    color: '#ffffff',
+    fontSize: '14px',
+    boxSizing: 'border-box',
+    marginTop: '6px',
+    marginBottom: '14px',
   };
 
   return (
     <div
       style={{
         minHeight: '100vh',
-        background: '#f5f7fb',
-        fontFamily: 'Arial, sans-serif',
-        padding: '24px',
+        background: 'radial-gradient(circle at top right, #302060, transparent 40%), linear-gradient(135deg, #080d20, #11152e 60%, #090c1b)',
+        fontFamily: "'Inter', Arial, sans-serif",
+        padding: '30px',
+        color: '#ffffff',
         boxSizing: 'border-box',
       }}
     >
-      {/* Header */}
-      <header
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '12px',
-        }}
-      >
-        <div>
-          <h1>Faculty Dashboard</h1>
-          <p>ZeroProxy Smart Attendance System</p>
-        </div>
-
-        <div
-          style={{
-            display: 'flex',
-            gap: '10px',
-            flexWrap: 'wrap',
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => navigate('/faculty/enroll')}
-            style={buttonStyle}
-          >
-            Student Enrolment
-          </button>
-
-          <button
-            type="button"
-            onClick={handleLogout}
-            style={{
-              ...buttonStyle,
-              background: '#dc2626',
-            }}
-          >
-            Logout
-          </button>
-        </div>
-      </header>
-
-      {/* Generate QR */}
-      <section style={cardStyle}>
-        <h2>Generate QR</h2>
-        <p>Select a class to display its demo attendance QR.</p>
-
-        <label htmlFor="classSelect">Select Class:</label>
-
-        <select
-          id="classSelect"
-          value={selectedClass}
-          onChange={(event) => {
-            setSelectedClass(event.target.value);
-            setQrGenerated(false);
-          }}
-          style={selectStyle}
-        >
-          <option value="">Choose a class</option>
-
-          {classes.map((item) => (
-            <option key={item.id} value={String(item.id)}>
-              {item.name} ({item.code})
-            </option>
-          ))}
-        </select>
-
-        <button
-          type="button"
-          onClick={handleGenerateQR}
-          style={buttonStyle}
-        >
-          Generate QR
-        </button>
-
-        {qrGenerated && selectedClassDetails && (
-          <div
-            style={{
-              marginTop: '20px',
-              padding: '20px',
-              background: '#f8fafc',
-              borderRadius: '12px',
-              textAlign: 'center',
-            }}
-          >
-            <h3>Attendance QR Display</h3>
-
-            <div
-              style={{
-                width: '100%',
-                maxWidth: '640px',
-                aspectRatio: '16 / 9',
-                margin: '16px auto',
-                padding: '12px',
-                boxSizing: 'border-box',
-                background: '#ffffff',
-                border: '1px solid #d1d5db',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '24px',
-                flexWrap: 'wrap',
-              }}
-            >
-              <QRCodeSVG
-                value={`ZEROPROXY-DEMO-${selectedClassDetails.code}`}
-                size={180}
-                level="H"
-              />
-
-              <div>
-                <h3>{selectedClassDetails.name}</h3>
-                <p>Course Code: {selectedClassDetails.code}</p>
-                <p>Sample QR — not valid for attendance</p>
-                <p>Session status: Demo</p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setQrGenerated(false)}
-              style={{
-                ...buttonStyle,
-                background: '#6b7280',
-              }}
-            >
-              Hide QR
-            </button>
-          </div>
-        )}
-      </section>
-
-      {/* My Classes */}
-      <section style={cardStyle}>
-        <div
+      <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+        {/* Header */}
+        <header
           style={{
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '16px',
+            marginBottom: '35px',
           }}
         >
           <div>
-            <h2>My Classes</h2>
-            <p>View, add, or delete your courses.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span
+                style={{
+                  background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+                  color: '#fff',
+                  fontWeight: 800,
+                  fontSize: '12px',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  letterSpacing: '0.05em',
+                }}
+              >
+                FACULTY PORTAL
+              </span>
+              <h1 style={{ margin: 0, fontSize: '28px', color: '#ffffff', fontWeight: 700 }}>
+                Faculty Dashboard
+              </h1>
+            </div>
+            <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '14px' }}>
+              ZeroProxy • Smart Facial Verification & Rotating QR System
+            </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setShowAddForm(!showAddForm);
-              setCourseMessage('');
-            }}
-            style={buttonStyle}
-          >
-            {showAddForm ? 'Cancel' : '+ Add Course'}
-          </button>
-        </div>
-
-        <p role="status">{classMessage}</p>
-
-        {/* Add Course Form */}
-        {showAddForm && (
-          <form
-            onSubmit={handleAddCourse}
-            style={{
-              marginTop: '20px',
-              padding: '20px',
-              background: '#f8fafc',
-              border: '1px solid #d1d5db',
-              borderRadius: '10px',
-            }}
-          >
-            <h3>Add New Course</h3>
-
-            <label htmlFor="courseName">Course Name:</label>
-            <input
-              id="courseName"
-              type="text"
-              value={courseName}
-              onChange={(event) => setCourseName(event.target.value)}
-              placeholder="e.g. Database Management Systems"
-              required
-              style={inputStyle}
-            />
-
-            <label htmlFor="courseCode">Course Code:</label>
-            <input
-              id="courseCode"
-              type="text"
-              value={courseCode}
-              onChange={(event) => setCourseCode(event.target.value)}
-              placeholder="e.g. CS304"
-              required
-              style={inputStyle}
-            />
-
-            <label htmlFor="courseSemester">Semester:</label>
-            <select
-              id="courseSemester"
-              value={courseSemester}
-              onChange={(event) =>
-                setCourseSemester(event.target.value)
-              }
-              style={inputStyle}
-            >
-              {Array.from({ length: 8 }, (_, index) => (
-                <option key={index + 1} value={`Semester ${index + 1}`}>
-                  Semester {index + 1}
-                </option>
-              ))}
-            </select>
-
-            <button type="submit" style={buttonStyle}>
-              Save Course
-            </button>
-
-            {courseMessage && (
-              <p role="status" style={{ color: '#b91c1c' }}>
-                {courseMessage}
-              </p>
-            )}
-          </form>
-        )}
-
-        {!showAddForm && courseMessage && (
-          <p role="status" style={{ color: '#166534' }}>
-            {courseMessage}
-          </p>
-        )}
-
-        {/* Course Cards */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-            gap: '16px',
-            marginTop: '20px',
-          }}
-        >
-          {classes.map((item) => (
-            <div
-              key={item.id}
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => navigate('/faculty/join-requests')}
               style={{
-                background: '#ffffff',
-                padding: '20px',
-                borderRadius: '12px',
-                border: '1px solid #e5e7eb',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                padding: '10px 18px',
+                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '14px',
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(99, 102, 241, 0.3)',
               }}
             >
-              <h3>{item.name}</h3>
+              📩 Join Requests
+            </button>
 
-              <p>
-                <strong>Course Code:</strong> {item.code}
+            <button
+              type="button"
+              onClick={() => navigate('/faculty/enroll')}
+              style={{
+                padding: '10px 18px',
+                background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '14px',
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(37, 99, 255, 0.3)',
+              }}
+            >
+              👥 Student Enrolment
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              style={{
+                padding: '10px 18px',
+                background: 'rgba(239, 68, 68, 0.15)',
+                color: '#f87171',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '14px',
+                cursor: 'pointer',
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        </header>
+
+        {errorMessage && (
+          <div
+            style={{
+              padding: '12px 18px',
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              color: '#fca5a5',
+              borderRadius: '10px',
+              marginBottom: '20px',
+              fontSize: '14px',
+            }}
+          >
+            ⚠️ {errorMessage}
+          </div>
+        )}
+
+        {/* ── Section: Live Attendance & Dynamic QR ─────────────────────── */}
+        <section style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '18px' }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: '#67e8f9' }}>
+                Live Attendance & Dynamic QR
+              </h2>
+              <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '14px' }}>
+                Start a live lecture session with rotating cryptographic QR tokens (Handbook §1 & §3)
               </p>
+            </div>
 
-              <p>{item.semester}</p>
+            {activeSession && (
+              <span
+                style={{
+                  background: 'rgba(74, 222, 128, 0.15)',
+                  border: '1px solid rgba(74, 222, 128, 0.4)',
+                  color: '#4ade80',
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', animation: 'pulse 1.5s infinite' }} />
+                Session #{activeSession.id} Active
+              </span>
+            )}
+          </div>
 
-              <p>
-                <strong>Session:</strong>{' '}
-                {item.session || 'No active session'}
-              </p>
+          {!activeSession ? (
+            /* Session Start Configuration */
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', alignItems: 'flex-end', marginTop: '14px' }}>
+                <div>
+                  <label htmlFor="course-select" style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#cbd5e1', marginBottom: '6px' }}>
+                    Select Course for Attendance Session:
+                  </label>
+                  <select
+                    id="course-select"
+                    value={selectedClassId}
+                    onChange={(e) => setSelectedClassId(e.target.value)}
+                    style={{
+                      ...inputStyle,
+                      marginTop: 0,
+                      marginBottom: 0,
+                      background: 'rgba(15, 23, 42, 0.9)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {classes.map((c) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name} ({c.code}) — {c.semester}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
+                <button
+                  type="button"
+                  disabled={sessionLoading || classes.length === 0}
+                  onClick={startLiveSession}
+                  style={{
+                    padding: '12px 24px',
+                    background: 'linear-gradient(135deg, #06b6d4, #2563eb)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: 700,
+                    fontSize: '14px',
+                    cursor: sessionLoading ? 'not-allowed' : 'pointer',
+                    boxShadow: '0 4px 14px rgba(6, 182, 212, 0.35)',
+                    opacity: classes.length === 0 ? 0.6 : 1,
+                  }}
+                >
+                  {sessionLoading ? 'Starting Session...' : '🚀 Start Live Session & Show Dynamic QR'}
+                </button>
+              </div>
+
+              {classes.length === 0 && (
+                <p style={{ color: '#f59e0b', fontSize: '13px', marginTop: '12px' }}>
+                  Please create a course below before starting an attendance session.
+                </p>
+              )}
+            </div>
+          ) : (
+            /* Live Dynamic QR Display Screen */
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '24px',
+                background: 'rgba(2, 6, 23, 0.85)',
+                border: '1px solid rgba(103, 232, 249, 0.3)',
+                borderRadius: '16px',
+              }}
+            >
               <div
                 style={{
                   display: 'flex',
-                  gap: '10px',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
                   flexWrap: 'wrap',
-                  marginTop: '16px',
+                  gap: '20px',
                 }}
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedClass(String(item.id));
-                    setQrGenerated(false);
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  style={buttonStyle}
-                >
-                  Select Class
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleDeleteCourse(item)}
+                {/* QR Code Container */}
+                <div
                   style={{
-                    ...buttonStyle,
-                    background: '#dc2626',
+                    background: '#ffffff',
+                    padding: '16px',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    boxShadow: '0 10px 30px rgba(0, 0, 0, 0.5)',
                   }}
                 >
-                  Delete
-                </button>
+                  {qrPayload ? (
+                    <QRCodeSVG
+                      value={JSON.stringify({
+                        session_id: qrPayload.session_id,
+                        window: qrPayload.window,
+                        mac: qrPayload.mac,
+                      })}
+                      size={200}
+                      level="H"
+                    />
+                  ) : (
+                    <div style={{ width: '200px', height: '200px', display: 'grid', placeItems: 'center', color: '#334155' }}>
+                      Generating rotating QR...
+                    </div>
+                  )}
+
+                  <span style={{ fontSize: '11px', color: '#64748b', marginTop: '8px', fontWeight: 600 }}>
+                    HMAC-SHA256 Signed • Rotates ~5s
+                  </span>
+                </div>
+
+                {/* Session Live Details */}
+                <div style={{ flex: 1, minWidth: '280px' }}>
+                  <h3 style={{ margin: '0 0 6px', fontSize: '20px', color: '#ffffff' }}>
+                    {selectedClass?.name}
+                  </h3>
+                  <p style={{ margin: '0 0 16px', color: '#94a3b8', fontSize: '14px' }}>
+                    Course Code: <strong style={{ color: '#67e8f9' }}>{selectedClass?.code}</strong> • Session #{activeSession.id}
+                  </p>
+
+                  {/* Dynamic Timer Badge & Progress */}
+                  <div
+                    style={{
+                      background: 'rgba(103, 232, 249, 0.08)',
+                      border: '1px solid rgba(103, 232, 249, 0.25)',
+                      padding: '12px 16px',
+                      borderRadius: '10px',
+                      marginBottom: '16px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#67e8f9' }}>
+                        <span>🔄 Window <strong style={{ color: '#ffffff' }}>#{qrPayload?.window}</strong></span>
+                        <span>•</span>
+                        <span>Next Rotation in: <strong style={{ fontSize: '15px', color: '#38bdf8' }}>{qrCountdown}s</strong></span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => fetchRotatingQR(activeSession.id)}
+                        style={{
+                          padding: '4px 10px',
+                          background: 'rgba(103, 232, 249, 0.15)',
+                          color: '#67e8f9',
+                          border: '1px solid rgba(103, 232, 249, 0.3)',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ⚡ Force Rotate
+                      </button>
+                    </div>
+
+                    {/* Animated Progress Bar */}
+                    <div style={{ width: '100%', height: '4px', background: 'rgba(103, 232, 249, 0.15)', borderRadius: '2px', overflow: 'hidden', marginTop: '10px' }}>
+                      <div
+                        style={{
+                          width: `${Math.min(100, Math.max(0, (qrCountdown / 5) * 100))}%`,
+                          height: '100%',
+                          background: 'linear-gradient(90deg, #06b6d4, #3b82f6)',
+                          transition: 'width 1s linear',
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px', fontFamily: 'monospace' }}>
+                      Token MAC: {qrPayload?.mac ? qrPayload.mac.substring(0, 16) + '...' : 'Generating...'}
+                    </div>
+                  </div>
+
+                  {/* Live Headcount */}
+                  <div style={{ background: 'rgba(30, 41, 59, 0.6)', padding: '14px 18px', borderRadius: '10px', marginBottom: '18px' }}>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Students Marked Present
+                    </div>
+                    <div style={{ fontSize: '32px', fontWeight: 800, color: '#4ade80', margin: '4px 0' }}>
+                      {liveAttendance.present_count}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#cbd5e1' }}>
+                      Verified via Facial Liveness & Proximity
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={endLiveSession}
+                    style={{
+                      padding: '11px 20px',
+                      background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontWeight: 700,
+                      fontSize: '14px',
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 14px rgba(220, 38, 38, 0.35)',
+                    }}
+                  >
+                    🛑 End Attendance Session
+                  </button>
+                </div>
               </div>
+
+              {/* Real-time Records List */}
+              {liveAttendance.records && liveAttendance.records.length > 0 && (
+                <div style={{ marginTop: '20px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '16px' }}>
+                  <h4 style={{ margin: '0 0 10px', fontSize: '14px', color: '#cbd5e1' }}>
+                    Recent Live Sign-Ins:
+                  </h4>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {liveAttendance.records.map((r, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: '12px',
+                          background: 'rgba(74, 222, 128, 0.1)',
+                          border: '1px solid rgba(74, 222, 128, 0.3)',
+                          color: '#4ade80',
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                        }}
+                      >
+                        ✓ Student ID #{r.student_id} ({r.source})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
+          )}
+        </section>
 
-        {classes.length === 0 && (
-          <p>No courses available. Click Add Course to create one.</p>
-        )}
-      </section>
+        {/* ── Section: My Classes ───────────────────────────────────────── */}
+        <section style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '18px' }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: '#ffffff' }}>
+                My Classes
+              </h2>
+              <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '14px' }}>
+                Manage your assigned courses and enrolled students
+              </p>
+            </div>
 
-      {/* Live Attendance */}
-      <section style={cardStyle}>
-        <h2>Live Attendance</h2>
-        <p>Monitor student attendance during an active session.</p>
+            <button
+              type="button"
+              onClick={() => setShowAddForm(!showAddForm)}
+              style={{
+                padding: '9px 18px',
+                background: showAddForm ? 'rgba(148, 163, 184, 0.2)' : 'linear-gradient(135deg, #0284c7, #2563eb)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '14px',
+                cursor: 'pointer',
+              }}
+            >
+              {showAddForm ? 'Cancel' : '+ Add Course'}
+            </button>
+          </div>
 
-        <h3>Current Attendance</h3>
-        <p style={{ fontSize: '28px', fontWeight: 'bold' }}>
-          0 students
-        </p>
-        <p>No active attendance session.</p>
+          {classMessage && (
+            <p style={{ color: '#94a3b8', fontSize: '14px', margin: '0 0 14px' }}>
+              {classMessage}
+            </p>
+          )}
 
-        <button
-          type="button"
-          onClick={() =>
-            alert(
-              'Live attendance will be connected to the backend later.'
-            )
-          }
-          style={buttonStyle}
-        >
-          View Live Attendance
-        </button>
-      </section>
+          {/* Add Course Form */}
+          {showAddForm && (
+            <form
+              onSubmit={handleAddCourse}
+              style={{
+                background: 'rgba(2, 6, 23, 0.8)',
+                border: '1px solid rgba(148, 163, 184, 0.25)',
+                borderRadius: '12px',
+                padding: '20px',
+                marginBottom: '20px',
+              }}
+            >
+              <h3 style={{ margin: '0 0 14px', fontSize: '16px', color: '#67e8f9' }}>
+                Create New Course
+              </h3>
 
-      {/* Manual Attendance Override */}
-      <section style={cardStyle}>
-        <h2>Manual Attendance Override</h2>
-        <p>
-          Select a student and attendance status. This is currently a demo.
-        </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                <div>
+                  <label htmlFor="course-name-input" style={{ fontSize: '13px', color: '#cbd5e1' }}>Course Name:</label>
+                  <input
+                    id="course-name-input"
+                    type="text"
+                    value={courseName}
+                    onChange={(e) => setCourseName(e.target.value)}
+                    placeholder="e.g. Design and Analysis of Algorithms"
+                    required
+                    style={inputStyle}
+                  />
+                </div>
 
-        <label htmlFor="student">Select Student:</label>
+                <div>
+                  <label htmlFor="course-code-input" style={{ fontSize: '13px', color: '#cbd5e1' }}>Course Code:</label>
+                  <input
+                    id="course-code-input"
+                    type="text"
+                    value={courseCode}
+                    onChange={(e) => setCourseCode(e.target.value)}
+                    placeholder="e.g. CS301"
+                    required
+                    style={inputStyle}
+                  />
+                </div>
 
-        <select
-          id="student"
-          value={student}
-          onChange={(event) => {
-            setStudent(event.target.value);
-            setAttendanceMessage('');
-          }}
-          style={selectStyle}
-        >
-          <option value="">Select a student</option>
-          <option value="Student 1 - CS301">Student 1 - CS301</option>
-          <option value="Student 2 - CS301">Student 2 - CS301</option>
-          <option value="Student 3 - CS301">Student 3 - CS301</option>
-        </select>
+                <div>
+                  <label htmlFor="course-sem-select" style={{ fontSize: '13px', color: '#cbd5e1' }}>Semester:</label>
+                  <select
+                    id="course-sem-select"
+                    value={courseSemester}
+                    onChange={(e) => setCourseSemester(e.target.value)}
+                    style={inputStyle}
+                  >
+                    {Array.from({ length: 8 }, (_, i) => (
+                      <option key={i + 1} value={`Semester ${i + 1}`}>
+                        Semester {i + 1}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
 
-        <label htmlFor="attendanceStatus">
-          Attendance Status:
-        </label>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '6px' }}>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '10px 20px',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Save Course
+                </button>
 
-        <select
-          id="attendanceStatus"
-          value={attendanceStatus}
-          onChange={(event) => {
-            setAttendanceStatus(event.target.value);
-            setAttendanceMessage('');
-          }}
-          style={selectStyle}
-        >
-          <option value="present">Present</option>
-          <option value="absent">Absent</option>
-        </select>
+                {courseMessage && (
+                  <span style={{ fontSize: '13px', color: courseMessage.includes('successfully') ? '#4ade80' : '#f87171' }}>
+                    {courseMessage}
+                  </span>
+                )}
+              </div>
+            </form>
+          )}
 
-        <button
-          type="button"
-          onClick={handleManualAttendance}
-          style={buttonStyle}
-        >
-          Update Attendance
-        </button>
+          {/* Classes Cards Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+            {classes.map((c) => {
+              const isSelected = String(c.id) === String(selectedClassId);
+              return (
+                <div
+                  key={c.id}
+                  style={{
+                    background: isSelected ? 'rgba(30, 58, 138, 0.4)' : 'rgba(30, 41, 59, 0.5)',
+                    border: isSelected ? '1px solid #3b82f6' : '1px solid rgba(148, 163, 184, 0.15)',
+                    borderRadius: '14px',
+                    padding: '18px',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                    <div>
+                      <span style={{ fontSize: '11px', background: 'rgba(103, 232, 249, 0.15)', color: '#67e8f9', padding: '3px 8px', borderRadius: '4px', fontWeight: 700 }}>
+                        {c.code}
+                      </span>
+                      <h3 style={{ margin: '8px 0 4px', fontSize: '18px', color: '#ffffff', fontWeight: 600 }}>
+                        {c.name}
+                      </h3>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
+                        {c.semester}
+                      </p>
+                    </div>
 
-        {attendanceMessage && (
-          <p
-            role="status"
-            style={{
-              marginTop: '16px',
-              color: attendanceMessage.startsWith('Please')
-                ? '#b91c1c'
-                : '#166534',
-              fontWeight: 'bold',
-            }}
-          >
-            {attendanceMessage}
-          </p>
-        )}
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 700, color: '#38bdf8' }}>
+                        {c.student_count ?? 0}
+                      </span>
+                      <span style={{ display: 'block', fontSize: '11px', color: '#94a3b8' }}>
+                        Enrolled
+                      </span>
+                    </div>
+                  </div>
 
-        <p style={{ color: '#6b7280', fontSize: '13px' }}>
-          Demo only: attendance changes are not saved to the backend.
-        </p>
-      </section>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '12px' }}>
+                    <span style={{ fontSize: '12px', color: c.session?.includes('Active') ? '#4ade80' : '#94a3b8' }}>
+                      ● {c.session || 'No active session'}
+                    </span>
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {c.active_session_id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resumeSession(c, c.active_session_id);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            color: '#ffffff',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.4)',
+                          }}
+                        >
+                          ▶ Show Live QR
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedClassId(String(c.id));
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        style={{
+                          padding: '6px 14px',
+                          background: isSelected ? '#2563eb' : 'rgba(255,255,255,0.1)',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? '✓ Selected' : 'Select'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
