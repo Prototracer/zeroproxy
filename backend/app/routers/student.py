@@ -86,11 +86,23 @@ async def create_join_request(
             detail="A pending join request for this faculty member already exists",
         )
 
-    # 4. Create and persist pending join request
+    # 4. Lookup optional course code if provided
+    target_class_id = None
+    if body.course_code and body.course_code.strip():
+        code_query = select(Course.id).where(
+            Course.code.ilike(body.course_code.strip()),
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == student.tenant_id,
+        )
+        code_res = await db.execute(code_query)
+        target_class_id = code_res.scalar_one_or_none()
+
+    # 5. Create and persist pending join request
     join_req = JoinRequest(
         tenant_id=student.tenant_id,
         student_id=student.id,
         faculty_id=faculty.id,
+        class_id=target_class_id,
         status="pending",
     )
     db.add(join_req)
@@ -118,6 +130,7 @@ async def list_my_join_requests(
             User.email.label("faculty_email"),
             User.name.label("faculty_name"),
             Course.name.label("class_name"),
+            Course.code.label("course_code"),
         )
         .join(User, User.id == JoinRequest.faculty_id)
         .outerjoin(Course, Course.id == JoinRequest.class_id)
@@ -131,7 +144,7 @@ async def list_my_join_requests(
     rows = result.all()
 
     items = []
-    for jr, faculty_email, faculty_name, class_name in rows:
+    for jr, faculty_email, faculty_name, class_name, course_code in rows:
         items.append(
             StudentJoinRequestItem(
                 id=jr.id,
@@ -140,6 +153,7 @@ async def list_my_join_requests(
                 faculty_name=faculty_name,
                 class_id=jr.class_id,
                 class_name=class_name,
+                course_code=course_code,
                 status=jr.status,
                 created_at=jr.created_at,
                 decided_at=jr.decided_at,

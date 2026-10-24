@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 
 class CreateJoinRequest(BaseModel):
     faculty_email: EmailStr
+    course_code: str | None = None
 
 
 class JoinRequestMessageResponse(BaseModel):
@@ -20,6 +21,7 @@ class StudentJoinRequestItem(BaseModel):
     faculty_name: str | None = None
     class_id: int | None = None
     class_name: str | None = None
+    course_code: str | None = None
     status: str
     created_at: datetime
     decided_at: datetime | None = None
