@@ -64,22 +64,28 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if user.status != "active":
+    if user.status == "disabled":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
+            detail="User account is disabled",
         )
 
     return user
 
 def require_role(*allowed_roles: str):
     async def role_checker(
-            user: User= Depends(get_current_user),
+            user: User = Depends(get_current_user),
             ) -> User:
         if user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this resource"
             )
+        if "faculty" in allowed_roles or "admin" in allowed_roles:
+            if user.status != "active":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is inactive",
+                )
         return user
     return role_checker
