@@ -22,3 +22,29 @@
   border-color: rgba(103, 232, 249, 0.4);
   box-shadow: 0 12px 36px rgba(34, 211, 238, 0.12);
 }
+
+/* Ensure only the active top video/canvas inside the QR scanner container is visible */
+#zeroproxy-qr-reader {
+  position: relative !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+#zeroproxy-qr-reader video ~ video {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  width: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+#zeroproxy-qr-reader canvas ~ canvas {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  width: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

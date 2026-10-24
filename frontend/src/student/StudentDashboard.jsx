@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiRequest } from "../api/client.js";
+import { stopAllGlobalCameras } from "../utils/cameraManager.js";
 
 function StudentDashboard() {
   const navigate = useNavigate();
@@ -22,8 +23,10 @@ function StudentDashboard() {
   const [statusMessage, setStatusMessage] = useState("Loading your attendance...");
 
   // Join course state
+  const [joinCodeInput, setJoinCodeInput] = useState("");
   const [facultyEmail, setFacultyEmail] = useState("");
   const [courseCode, setCourseCode] = useState("");
+  const [useEmailFallback, setUseEmailFallback] = useState(false);
   const [joinSubmitting, setJoinSubmitting] = useState(false);
   const [joinNotice, setJoinNotice] = useState(null); // { type: 'success' | 'error', text: '' }
   const [joinRequests, setJoinRequests] = useState([]);
@@ -74,6 +77,9 @@ function StudentDashboard() {
   }
 
   useEffect(() => {
+    // Ensure any camera streams from previous scanning pages are thoroughly stopped
+    stopAllGlobalCameras();
+
     loadStudentData();
     loadJoinRequests();
     loadInstructors();
@@ -88,6 +94,45 @@ function StudentDashboard() {
     e.preventDefault();
     setJoinNotice(null);
 
+    // If using Course Join Code mode (default & recommended)
+    if (!useEmailFallback) {
+      const codeTrimmed = joinCodeInput.trim().toUpperCase();
+      if (!codeTrimmed) {
+        setJoinNotice({ type: "error", text: "Please enter the 6-character course join code provided by your instructor." });
+        return;
+      }
+
+      setJoinSubmitting(true);
+      try {
+        const res = await apiRequest("/student/join-requests", {
+          method: "POST",
+          body: JSON.stringify({
+            join_code: codeTrimmed,
+          }),
+        });
+
+        const freshRequests = await apiRequest("/student/join-requests");
+        if (Array.isArray(freshRequests)) {
+          setJoinRequests(freshRequests);
+        }
+
+        setJoinNotice({
+          type: "success",
+          text: res?.message || `Join request sent for code ${codeTrimmed}! Awaiting instructor approval.`,
+        });
+        setJoinCodeInput("");
+      } catch (err) {
+        setJoinNotice({
+          type: "error",
+          text: err?.message || "Could not submit join request with this code. Check if the code is enabled or already used.",
+        });
+      } finally {
+        setJoinSubmitting(false);
+      }
+      return;
+    }
+
+    // Fallback: via Faculty Email
     const emailTrimmed = facultyEmail.trim().toLowerCase();
     if (!emailTrimmed) {
       setJoinNotice({ type: "error", text: "Please enter the faculty member's email address." });
@@ -168,7 +213,7 @@ function StudentDashboard() {
       );
       return;
     }
-    navigate("/camera-test");
+    navigate("/student/scan");
   }
 
   const cardStyle = {
@@ -400,11 +445,33 @@ function StudentDashboard() {
       >
         {/* Form: Join a Course */}
         <div style={cardStyle}>
-          <h3 style={{ margin: "0 0 6px", fontSize: "18px", color: "#67e8f9" }}>
-            ➕ Join a Course / Faculty
-          </h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+              ➕ Join a Course
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                setUseEmailFallback(!useEmailFallback);
+                setJoinNotice(null);
+              }}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#94a3b8",
+                fontSize: "12px",
+                cursor: "pointer",
+                textDecoration: "underline",
+              }}
+            >
+              {useEmailFallback ? "Use Course Code instead" : "Join via Faculty Email instead"}
+            </button>
+          </div>
+
           <p style={{ color: "#a5acc5", fontSize: "13px", margin: "0 0 18px" }}>
-            Ask an instructor to add you to their class roster by entering their email address.
+            {useEmailFallback
+              ? "Ask an instructor to add you to their class roster by entering their email address."
+              : "Enter the 6-character random Join Code provided by your course faculty to request admission."}
           </p>
 
           {joinNotice && (
@@ -430,145 +497,214 @@ function StudentDashboard() {
             </div>
           )}
 
-          {instructors.length > 0 && (
-            <div style={{ marginBottom: "16px" }}>
-              <div
+          {!useEmailFallback ? (
+            /* Mode 1: Instant Course Join Code */
+            <form onSubmit={handleSendJoinRequest}>
+              <div style={{ marginBottom: "18px" }}>
+                <label
+                  htmlFor="join-code-input"
+                  style={{
+                    display: "block",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: "#cbd5e1",
+                    marginBottom: "8px",
+                  }}
+                >
+                  Enter Course Join Code <span style={{ color: "#fb7185" }}>*</span>
+                </label>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <input
+                    id="join-code-input"
+                    type="text"
+                    required
+                    maxLength={10}
+                    placeholder="e.g. 38KUDF"
+                    value={joinCodeInput}
+                    onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                    style={{
+                      ...inputStyle,
+                      flex: 1,
+                      letterSpacing: "0.2em",
+                      fontSize: "20px",
+                      fontWeight: 700,
+                      textAlign: "center",
+                      textTransform: "uppercase",
+                      background: "rgba(15, 23, 42, 0.8)",
+                      border: "2px solid rgba(103, 232, 249, 0.4)",
+                      padding: "12px 14px",
+                    }}
+                  />
+                </div>
+                <span style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                  Ask your faculty instructor for this session's course join code.
+                </span>
+              </div>
+
+              <button
+                type="submit"
+                disabled={joinSubmitting || !joinCodeInput.trim()}
                 style={{
-                  fontSize: "12px",
-                  color: "#94a3b8",
-                  marginBottom: "8px",
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
+                  width: "100%",
+                  padding: "13px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "linear-gradient(135deg, #06b6d4, #6366f1)",
+                  color: "#ffffff",
+                  fontWeight: 700,
+                  fontSize: "14px",
+                  cursor: joinSubmitting || !joinCodeInput.trim() ? "not-allowed" : "pointer",
+                  opacity: joinSubmitting || !joinCodeInput.trim() ? 0.6 : 1,
+                  boxShadow: "0 4px 14px rgba(6, 182, 212, 0.3)",
                 }}
               >
-                Available Instructors (Click to select):
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                {instructors.map((inst) => {
-                  const defaultCourse = inst.courses && inst.courses.length > 0 ? inst.courses[0] : null;
-                  const isSelected = facultyEmail.toLowerCase() === inst.email.toLowerCase();
+                {joinSubmitting ? "Sending Request..." : "🚀 Send Admission Request via Code"}
+              </button>
+            </form>
+          ) : (
+            /* Mode 2: Via Faculty Email (Fallback) */
+            <>
+              {instructors.length > 0 && (
+                <div style={{ marginBottom: "16px" }}>
+                  <div
+                    style={{
+                      fontSize: "12px",
+                      color: "#94a3b8",
+                      marginBottom: "8px",
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    Available Instructors (Click to select):
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {instructors.map((inst) => {
+                      const defaultCourse = inst.courses && inst.courses.length > 0 ? inst.courses[0] : null;
+                      const isSelected = facultyEmail.toLowerCase() === inst.email.toLowerCase();
 
-                  return (
-                    <button
-                      key={inst.id}
-                      type="button"
-                      onClick={() => {
-                        setFacultyEmail(inst.email);
-                        if (defaultCourse) {
-                          setCourseCode(defaultCourse.code);
-                        }
-                      }}
-                      style={{
-                        padding: "7px 12px",
-                        borderRadius: "20px",
-                        border: isSelected
-                          ? "1px solid #67e8f9"
-                          : "1px solid rgba(255,255,255,0.15)",
-                        background: isSelected
-                          ? "rgba(103, 232, 249, 0.18)"
-                          : "rgba(255,255,255,0.05)",
-                        color: isSelected ? "#67e8f9" : "#e2e8f0",
-                        fontSize: "12px",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        transition: "all 0.2s ease",
-                      }}
-                    >
-                      <span>👤 {inst.name}</span>
-                      <span style={{ color: "#94a3b8", fontSize: "11px" }}>({inst.email})</span>
-                      {defaultCourse && (
-                        <span
+                      return (
+                        <button
+                          key={inst.id}
+                          type="button"
+                          onClick={() => {
+                            setFacultyEmail(inst.email);
+                            if (defaultCourse) {
+                              setCourseCode(defaultCourse.code);
+                            }
+                          }}
                           style={{
-                            background: "rgba(99, 102, 241, 0.25)",
-                            color: "#a5b4fc",
-                            padding: "2px 7px",
-                            borderRadius: "10px",
-                            fontSize: "11px",
-                            fontWeight: 600,
+                            padding: "7px 12px",
+                            borderRadius: "20px",
+                            border: isSelected
+                              ? "1px solid #67e8f9"
+                              : "1px solid rgba(255,255,255,0.15)",
+                            background: isSelected
+                              ? "rgba(103, 232, 249, 0.18)"
+                              : "rgba(255,255,255,0.05)",
+                            color: isSelected ? "#67e8f9" : "#e2e8f0",
+                            fontSize: "12px",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            transition: "all 0.2s ease",
                           }}
                         >
-                          {defaultCourse.code}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+                          <span>👤 {inst.name}</span>
+                          <span style={{ color: "#94a3b8", fontSize: "11px" }}>({inst.email})</span>
+                          {defaultCourse && (
+                            <span
+                              style={{
+                                background: "rgba(99, 102, 241, 0.25)",
+                                color: "#a5b4fc",
+                                padding: "2px 7px",
+                                borderRadius: "10px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {defaultCourse.code}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handleSendJoinRequest}>
+                <div style={{ marginBottom: "14px" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "13px",
+                      color: "#cbd5e1",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Faculty Email Address <span style={{ color: "#fb7185" }}>*</span>
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    list="registered-faculty-list"
+                    placeholder="faculty@example.com"
+                    value={facultyEmail}
+                    onChange={(e) => setFacultyEmail(e.target.value)}
+                    style={{ ...inputStyle, width: "100%" }}
+                  />
+                  <datalist id="registered-faculty-list">
+                    {instructors.map((inst) => (
+                      <option key={inst.id} value={inst.email}>
+                        {inst.name} ({inst.courses?.map((c) => c.code).join(", ") || "No courses"})
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+
+                <div style={{ marginBottom: "18px" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "13px",
+                      color: "#cbd5e1",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Course Code (Optional, e.g. CS101)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. CS101 or leave blank"
+                    value={courseCode}
+                    onChange={(e) => setCourseCode(e.target.value)}
+                    style={{ ...inputStyle, width: "100%" }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={joinSubmitting}
+                  style={{
+                    width: "100%",
+                    padding: "12px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "linear-gradient(135deg, #06b6d4, #6366f1)",
+                    color: "#ffffff",
+                    fontWeight: 600,
+                    fontSize: "14px",
+                    cursor: joinSubmitting ? "not-allowed" : "pointer",
+                    opacity: joinSubmitting ? 0.7 : 1,
+                  }}
+                >
+                  {joinSubmitting ? "Sending Request..." : "Send Join Request"}
+                </button>
+              </form>
+            </>
           )}
-
-          <form onSubmit={handleSendJoinRequest}>
-            <div style={{ marginBottom: "14px" }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "13px",
-                  color: "#cbd5e1",
-                  marginBottom: "6px",
-                }}
-              >
-                Faculty Email Address <span style={{ color: "#fb7185" }}>*</span>
-              </label>
-              <input
-                type="email"
-                required
-                list="registered-faculty-list"
-                placeholder="faculty@example.com"
-                value={facultyEmail}
-                onChange={(e) => setFacultyEmail(e.target.value)}
-                style={{ ...inputStyle, width: "100%" }}
-              />
-              <datalist id="registered-faculty-list">
-                {instructors.map((inst) => (
-                  <option key={inst.id} value={inst.email}>
-                    {inst.name} ({inst.courses?.map((c) => c.code).join(", ") || "No courses"})
-                  </option>
-                ))}
-              </datalist>
-            </div>
-
-            <div style={{ marginBottom: "18px" }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "13px",
-                  color: "#cbd5e1",
-                  marginBottom: "6px",
-                }}
-              >
-                Course Code (Optional, e.g. CS101)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. CS101 or leave blank"
-                value={courseCode}
-                onChange={(e) => setCourseCode(e.target.value)}
-                style={{ ...inputStyle, width: "100%" }}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={joinSubmitting}
-              style={{
-                width: "100%",
-                padding: "12px",
-                borderRadius: "8px",
-                border: "none",
-                background: "linear-gradient(135deg, #06b6d4, #6366f1)",
-                color: "#ffffff",
-                fontWeight: 600,
-                fontSize: "14px",
-                cursor: joinSubmitting ? "not-allowed" : "pointer",
-                opacity: joinSubmitting ? 0.7 : 1,
-              }}
-            >
-              {joinSubmitting ? "Sending Request..." : "Send Join Request"}
-            </button>
-          </form>
         </div>
 
         {/* List: My Join Requests */}

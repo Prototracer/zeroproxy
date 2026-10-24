@@ -135,12 +135,12 @@ function FacultyDashboard() {
       const tokenData = await apiRequest(`/sessions/${sessionId}/qr`);
       setQrPayload(tokenData);
 
-      const ttlSeconds = Math.max(1, Math.round((tokenData.expires_in_ms || 5000) / 1000));
+      const ttlSeconds = Math.max(1, Math.round((tokenData.expires_in_ms || 30000) / 1000));
       setQrCountdown(ttlSeconds);
 
       // Schedule next QR refresh exactly before this window expires
       clearTimeout(qrPollTimerRef.current);
-      const refreshDelay = Math.max(1500, (tokenData.expires_in_ms || 4000) - 300);
+      const refreshDelay = Math.max(1500, (tokenData.expires_in_ms || 30000) - 300);
 
       qrPollTimerRef.current = setTimeout(() => {
         fetchRotatingQR(sessionId);
@@ -239,6 +239,62 @@ function FacultyDashboard() {
     } catch (err) {
       setCourseMessage(err.message || 'Failed to add course.');
     }
+  }
+
+  // ── Join Code Management ────────────────────────────────────────────────
+  const [codeActionLoading, setCodeActionLoading] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+
+  async function handleToggleJoinCode(courseId) {
+    setCodeActionLoading(true);
+    setErrorMessage('');
+    try {
+      const updated = await apiRequest(`/faculty/courses/${courseId}/toggle-join-code`, {
+        method: 'POST',
+      });
+      setClasses((prev) =>
+        prev.map((c) =>
+          c.id === courseId
+            ? { ...c, join_code: updated.join_code, join_code_enabled: updated.join_code_enabled }
+            : c
+        )
+      );
+    } catch (err) {
+      setErrorMessage(err.message || 'Failed to toggle join code status.');
+    } finally {
+      setCodeActionLoading(false);
+    }
+  }
+
+  async function handleRegenerateJoinCode(courseId) {
+    if (!window.confirm('Generate a brand-new join code for this course? The old code will immediately stop working.')) {
+      return;
+    }
+    setCodeActionLoading(true);
+    setErrorMessage('');
+    try {
+      const updated = await apiRequest(`/faculty/courses/${courseId}/regenerate-join-code`, {
+        method: 'POST',
+      });
+      setClasses((prev) =>
+        prev.map((c) =>
+          c.id === courseId
+            ? { ...c, join_code: updated.join_code, join_code_enabled: updated.join_code_enabled }
+            : c
+        )
+      );
+    } catch (err) {
+      setErrorMessage(err.message || 'Failed to regenerate join code.');
+    } finally {
+      setCodeActionLoading(false);
+    }
+  }
+
+  function handleCopyCode(code) {
+    if (!code) return;
+    navigator.clipboard.writeText(code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
   }
 
   function handleLogout() {
@@ -596,7 +652,7 @@ function FacultyDashboard() {
                   )}
 
                   <span style={{ fontSize: '11px', color: '#64748b', marginTop: '8px', fontWeight: 600 }}>
-                    HMAC-SHA256 Signed • Rotates ~5s
+                    HMAC-SHA256 Signed • Rotates ~30s
                   </span>
                 </div>
 
@@ -879,6 +935,107 @@ function FacultyDashboard() {
                       <span style={{ display: 'block', fontSize: '11px', color: '#94a3b8' }}>
                         Enrolled
                       </span>
+                    </div>
+                  </div>
+
+                  {/* Course Join Code Management */}
+                  <div
+                    style={{
+                      marginTop: '14px',
+                      padding: '12px 14px',
+                      background: 'rgba(15, 23, 42, 0.75)',
+                      borderRadius: '10px',
+                      border: c.join_code_enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Student Join Code
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          background: c.join_code_enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                          color: c.join_code_enabled ? '#34d399' : '#f87171',
+                          border: c.join_code_enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                        }}
+                      >
+                        {c.join_code_enabled ? '● Active (Open)' : '○ Disabled (Closed)'}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <code
+                          style={{
+                            fontSize: '18px',
+                            fontWeight: 800,
+                            letterSpacing: '0.18em',
+                            color: c.join_code_enabled ? '#67e8f9' : '#64748b',
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                          }}
+                        >
+                          {c.join_code || '------'}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyCode(c.join_code)}
+                          title="Copy Code"
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.2)',
+                            background: 'rgba(255,255,255,0.06)',
+                            color: copiedCode ? '#34d399' : '#cbd5e1',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {copiedCode ? '✓ Copied' : '📋 Copy'}
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                          type="button"
+                          disabled={codeActionLoading}
+                          onClick={() => handleToggleJoinCode(c.id)}
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            borderRadius: '6px',
+                            border: 'none',
+                            background: c.join_code_enabled ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                            color: c.join_code_enabled ? '#fca5a5' : '#86efac',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {c.join_code_enabled ? 'Disable' : 'Enable'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={codeActionLoading}
+                          onClick={() => handleRegenerateJoinCode(c.id)}
+                          title="Generate a new randomized code"
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            borderRadius: '6px',
+                            border: '1px solid rgba(148, 163, 184, 0.3)',
+                            background: 'transparent',
+                            color: '#94a3b8',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          🔄 New
+                        </button>
+                      </div>
                     </div>
                   </div>
 

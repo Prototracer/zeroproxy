@@ -384,6 +384,8 @@ async def list_faculty_classes(
                 student_count=student_count,
                 session=session_str,
                 active_session_id=active_session_id,
+                join_code=getattr(course, "join_code", None),
+                join_code_enabled=True if getattr(course, "join_code_enabled", None) is None else bool(course.join_code_enabled),
             )
         )
 
@@ -409,12 +411,16 @@ async def create_faculty_class(
             detail="Course with this code already exists",
         )
 
+    from app.services.join_code_service import generate_course_join_code
+
     course = Course(
         tenant_id=faculty.tenant_id,
         name=body.name,
         code=body.code,
         semester=body.semester,
         faculty_id=faculty.id,
+        join_code=generate_course_join_code(6),
+        join_code_enabled=True,
     )
     db.add(course)
     await db.flush()
@@ -430,7 +436,85 @@ async def create_faculty_class(
         faculty_id=course.faculty_id,
         student_count=0,
         session="No active session",
+        join_code=course.join_code,
+        join_code_enabled=course.join_code_enabled,
     )
+
+
+@router.post("/courses/{id}/toggle-join-code")
+async def toggle_course_join_code(
+    id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Enable or disable course admission via join code."""
+    from app.services.join_code_service import generate_course_join_code
+
+    result = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == faculty.tenant_id,
+        )
+    )
+    course = result.scalar_one_or_none()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if not course.join_code:
+        course.join_code = generate_course_join_code(6)
+
+    course.join_code_enabled = not course.join_code_enabled
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "course_id": course.id,
+        "join_code": course.join_code,
+        "join_code_enabled": course.join_code_enabled,
+        "message": f"Join requests through code are now {'enabled' if course.join_code_enabled else 'disabled'}.",
+    }
+
+
+@router.post("/courses/{id}/regenerate-join-code")
+async def regenerate_course_join_code(
+    id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate a new unique join code for a course."""
+    from app.services.join_code_service import generate_course_join_code
+
+    result = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == faculty.tenant_id,
+        )
+    )
+    course = result.scalar_one_or_none()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    new_code = generate_course_join_code(6)
+    for _ in range(10):
+        existing = (await db.execute(select(Course.id).where(Course.join_code == new_code))).scalar_one_or_none()
+        if not existing:
+            break
+        new_code = generate_course_join_code(6)
+
+    course.join_code = new_code
+    course.join_code_enabled = True
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "course_id": course.id,
+        "join_code": course.join_code,
+        "join_code_enabled": course.join_code_enabled,
+        "message": f"New join code '{course.join_code}' generated and enabled.",
+    }
+
 
 
 # ── In-Person Password Reset ─────────────────────────────────────────────────

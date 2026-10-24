@@ -1,5 +1,5 @@
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -49,3 +49,17 @@ class Course(Base):
         nullable=False,
         index=True,
     )
+
+    join_code: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
+    join_code_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+

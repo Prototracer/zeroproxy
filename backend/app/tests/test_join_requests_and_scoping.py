@@ -520,3 +520,62 @@ def test_ast_check_only_face_enrollment_service_sets_status_active():
         f"Violations of single-activation path found in: {violations}. "
         "Only face_enrollment_service.py may set status = 'active'!"
     )
+
+
+# ── Acceptance Test 11: Join via Course Join Code (dynamic enable/disable) ────
+
+def test_join_via_course_code_and_toggle(test_data):
+    db_mock = MagicMock()
+    db_mock.execute = AsyncMock()
+    db_mock.commit = AsyncMock()
+
+    test_course = test_data["class_a"]
+    test_course.join_code = "K9X2M4"
+    test_course.join_code_enabled = True
+
+    # 1. Successful join via valid enabled join_code
+    mock_count = MagicMock()
+    mock_count.scalar.return_value = 0
+    mock_course_res = MagicMock()
+    mock_course_res.scalar_one_or_none.return_value = test_course
+    mock_no_enrollment = MagicMock()
+    mock_no_enrollment.scalar_one_or_none.return_value = None
+    mock_no_existing_jr = MagicMock()
+    mock_no_existing_jr.scalar_one_or_none.return_value = None
+
+    db_mock.execute.side_effect = [
+        mock_count,
+        mock_course_res,
+        mock_no_enrollment,
+        mock_no_existing_jr,
+    ]
+
+    client_student = make_client_with_user(test_data["student_pending"], db_mock)
+    res = client_student.post("/student/join-requests", json={"join_code": "k9x2m4"})
+    assert res.status_code == 200
+    assert "submitted" in res.json()["status"].lower()
+
+    # 2. Rejection when join_code is disabled by faculty
+    test_course.join_code_enabled = False
+    db_mock.execute.side_effect = [mock_count, mock_course_res]
+    res_disabled = client_student.post("/student/join-requests", json={"join_code": "K9X2M4"})
+    assert res_disabled.status_code == 400
+    assert "disabled" in res_disabled.json()["detail"].lower()
+
+    # 3. Faculty toggles join code
+    client_faculty = make_client_with_user(test_data["faculty_a"], db_mock)
+    db_mock.execute.side_effect = [mock_course_res]
+    res_toggle = client_faculty.post(f"/faculty/courses/{test_course.id}/toggle-join-code")
+    assert res_toggle.status_code == 200
+    assert res_toggle.json()["join_code_enabled"] is True
+
+    # 4. Faculty regenerates join code
+    mock_check_unique = MagicMock()
+    mock_check_unique.scalar_one_or_none.return_value = None
+    db_mock.execute.side_effect = [mock_course_res, mock_check_unique]
+    res_regen = client_faculty.post(f"/faculty/courses/{test_course.id}/regenerate-join-code")
+    assert res_regen.status_code == 200
+    assert len(res_regen.json()["join_code"]) == 6
+
+    app.dependency_overrides.clear()
+

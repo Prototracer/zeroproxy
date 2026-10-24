@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import require_role
 from app.core.rate_limiter import limiter
 from app.db import get_db
+from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
 from app.models.join_request import JoinRequest
 from app.models.user import User
@@ -34,10 +35,9 @@ async def create_join_request(
     student: User = Depends(require_role("student")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Submit a join request to a faculty member by email.
+    """Submit a join request to a course by join code or faculty email.
 
-    Always returns the exact same success-style response regardless of
-    whether the faculty member exists, preventing email enumeration.
+    Prevents multiple or duplicate join requests for the same course or faculty.
     """
     # 1. Enforce student max 5 pending requests cap
     pending_count_res = await db.execute(
@@ -54,7 +54,90 @@ async def create_join_request(
             detail="Maximum 5 pending join requests allowed",
         )
 
-    # 2. Look up faculty member in the same tenant
+    # 2. Path A: Join via Course Join Code
+    if body.join_code and body.join_code.strip():
+        clean_code = body.join_code.strip().upper()
+        course_res = await db.execute(
+            select(Course).where(
+                Course.join_code == clean_code,
+                Course.tenant_id == student.tenant_id,
+            )
+        )
+        course = course_res.scalar_one_or_none()
+        if not course:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Join code '{clean_code}' is invalid.",
+            )
+
+        if not course.join_code_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Join requests for {course.name} ({course.code}) are currently disabled by the instructor.",
+            )
+
+        # Check if already enrolled in this course
+        already_enrolled = (
+            await db.execute(
+                select(ClassEnrollment.id).where(
+                    ClassEnrollment.student_id == student.id,
+                    ClassEnrollment.course_id == course.id,
+                    ClassEnrollment.tenant_id == student.tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if already_enrolled is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"You are already enrolled in {course.name} ({course.code}).",
+            )
+
+        # Check if student already has a pending or approved request for this course
+        existing_jr = (
+            await db.execute(
+                select(JoinRequest).where(
+                    JoinRequest.student_id == student.id,
+                    JoinRequest.class_id == course.id,
+                    JoinRequest.tenant_id == student.tenant_id,
+                    JoinRequest.status.in_(["pending", "approved"]),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_jr is not None:
+            if existing_jr.status == "pending":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"You already have a pending join request for {course.name} ({course.code}).",
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Your join request for {course.name} ({course.code}) was already approved.",
+                )
+
+        # Persist pending join request
+        join_req = JoinRequest(
+            tenant_id=student.tenant_id,
+            student_id=student.id,
+            faculty_id=course.faculty_id,
+            class_id=course.id,
+            status="pending",
+        )
+        db.add(join_req)
+        await db.commit()
+
+        return JoinRequestMessageResponse(
+            status="submitted",
+            message=f"Join request for {course.name} ({course.code}) sent successfully! Awaiting instructor approval.",
+        )
+
+    # 3. Path B: Join via Faculty Email (Legacy path)
+    if not body.faculty_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a valid Course Join Code or faculty email.",
+        )
+
     faculty_res = await db.execute(
         select(User).where(
             User.email == body.faculty_email.lower().strip(),
@@ -71,13 +154,42 @@ async def create_join_request(
             message=STANDARD_JOIN_SUCCESS_MESSAGE,
         )
 
-    # 3. Check for existing pending request for this (student, faculty) pair
+    # Lookup optional course code if provided
+    target_class_id = None
+    if body.course_code and body.course_code.strip():
+        code_query = select(Course).where(
+            Course.code.ilike(body.course_code.strip()),
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == student.tenant_id,
+        )
+        code_res = await db.execute(code_query)
+        target_class = code_res.scalar_one_or_none()
+        if target_class:
+            target_class_id = target_class.id
+
+            # Check if student is already enrolled in this class
+            already_enrolled = (
+                await db.execute(
+                    select(ClassEnrollment.id).where(
+                        ClassEnrollment.student_id == student.id,
+                        ClassEnrollment.course_id == target_class_id,
+                        ClassEnrollment.tenant_id == student.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if already_enrolled is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"You are already enrolled in course {body.course_code.strip()}.",
+                )
+
+    # Check for existing pending or approved request in a single query
     existing_res = await db.execute(
         select(JoinRequest.id).where(
             JoinRequest.student_id == student.id,
             JoinRequest.faculty_id == faculty.id,
             JoinRequest.tenant_id == student.tenant_id,
-            JoinRequest.status == "pending",
+            JoinRequest.status.in_(["pending", "approved"]),
         )
     )
     if existing_res.scalar_one_or_none() is not None:
@@ -86,18 +198,9 @@ async def create_join_request(
             detail="A pending join request for this faculty member already exists",
         )
 
-    # 4. Lookup optional course code if provided
-    target_class_id = None
-    if body.course_code and body.course_code.strip():
-        code_query = select(Course.id).where(
-            Course.code.ilike(body.course_code.strip()),
-            Course.faculty_id == faculty.id,
-            Course.tenant_id == student.tenant_id,
-        )
-        code_res = await db.execute(code_query)
-        target_class_id = code_res.scalar_one_or_none()
 
-    # 5. Create and persist pending join request
+
+    # Create and persist pending join request
     join_req = JoinRequest(
         tenant_id=student.tenant_id,
         student_id=student.id,
@@ -112,6 +215,7 @@ async def create_join_request(
         status="submitted",
         message=STANDARD_JOIN_SUCCESS_MESSAGE,
     )
+
 
 
 @router.get(

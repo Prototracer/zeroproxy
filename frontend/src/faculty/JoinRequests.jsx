@@ -13,6 +13,11 @@ export default function JoinRequests() {
   const [selectedClassMap, setSelectedClassMap] = useState({}); // req.id -> class_id
   const [actionLoadingId, setActionLoadingId] = useState(null);
 
+  // Multi-selection state
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [bulkClassId, setBulkClassId] = useState('');
+
   useEffect(() => {
     loadData();
   }, []);
@@ -32,19 +37,47 @@ export default function JoinRequests() {
       setRequests(reqList);
       setClasses(classList);
 
-      // Default select the first class for each request
+      // Default select the requested class if set, otherwise first class
       if (classList.length > 0) {
         const defaultMap = {};
         reqList.forEach((r) => {
-          defaultMap[r.id] = classList[0].id;
+          defaultMap[r.id] = r.class_id || classList[0].id;
         });
         setSelectedClassMap(defaultMap);
+        if (!bulkClassId) {
+          setBulkClassId(classList[0].id);
+        }
       }
+      setSelectedIds(new Set());
     } catch (err) {
       setError(err?.message || 'Failed to load join requests from server.');
     } finally {
       setLoading(false);
     }
+  }
+
+  const pendingRequests = requests.filter((r) => r.status === 'pending');
+  const allPendingSelected =
+    pendingRequests.length > 0 && pendingRequests.every((r) => selectedIds.has(r.id));
+
+  function handleToggleSelectAll() {
+    if (allPendingSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(pendingRequests.map((r) => r.id)));
+    }
+  }
+
+  function handleToggleRow(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   }
 
   async function handleApprove(requestId) {
@@ -76,6 +109,44 @@ export default function JoinRequests() {
     } finally {
       setActionLoadingId(null);
     }
+  }
+
+  async function handleApproveSelected() {
+    if (selectedIds.size === 0) return;
+    if (classes.length === 0) {
+      alert('Please create at least one course before approving students.');
+      return;
+    }
+
+    const targetIds = Array.from(selectedIds);
+    setBatchLoading(true);
+    setActionNotice(null);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const reqId of targetIds) {
+      try {
+        const classId =
+          selectedClassMap[reqId] || bulkClassId || classes[0].id;
+        await apiRequest(`/faculty/join-requests/${reqId}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({ class_id: Number(classId) }),
+        });
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+
+    setBatchLoading(false);
+    setActionNotice({
+      type: failCount === 0 ? 'success' : 'error',
+      text: `Approved ${successCount} student(s) successfully.${
+        failCount > 0 ? ` (${failCount} failed)` : ''
+      }`,
+    });
+    await loadData();
   }
 
   async function handleReject(requestId) {
@@ -195,10 +266,11 @@ export default function JoinRequests() {
                 ? 'rgba(74, 222, 128, 0.15)'
                 : 'rgba(251, 113, 133, 0.15)',
             color: actionNotice.type === 'success' ? '#4ade80' : '#fb7185',
-            border: `1px solid ${actionNotice.type === 'success'
-              ? 'rgba(74, 222, 128, 0.3)'
-              : 'rgba(251, 113, 133, 0.3)'
-              }`,
+            border: `1px solid ${
+              actionNotice.type === 'success'
+                ? 'rgba(74, 222, 128, 0.3)'
+                : 'rgba(251, 113, 133, 0.3)'
+            }`,
           }}
         >
           {actionNotice.text}
@@ -228,12 +300,60 @@ export default function JoinRequests() {
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '12px',
             marginBottom: '20px',
           }}
         >
-          <h2 style={{ margin: 0, fontSize: '18px', color: '#67e8f9' }}>
-            Pending Requests ({requests.filter((r) => r.status === 'pending').length})
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, fontSize: '18px', color: '#67e8f9' }}>
+              Pending Requests ({pendingRequests.length})
+            </h2>
+
+            {/* Bulk Action Controls */}
+            {pendingRequests.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={handleToggleSelectAll}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(103, 232, 249, 0.4)',
+                    background: allPendingSelected ? '#06b6d4' : 'rgba(6, 182, 212, 0.12)',
+                    color: allPendingSelected ? '#ffffff' : '#67e8f9',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {allPendingSelected ? '✓ Deselect All' : 'Select All'}
+                </button>
+
+                {selectedIds.size > 0 && (
+                  <button
+                    type="button"
+                    disabled={batchLoading}
+                    onClick={handleApproveSelected}
+                    style={{
+                      padding: '6px 14px',
+                      borderRadius: '6px',
+                      border: 'none',
+                      background: 'linear-gradient(135deg, #10b981, #059669)',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: batchLoading ? 'not-allowed' : 'pointer',
+                      boxShadow: '0 2px 10px rgba(16, 185, 129, 0.35)',
+                    }}
+                  >
+                    {batchLoading ? 'Approving...' : `Approve Selected (${selectedIds.size})`}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={loadData}
@@ -269,6 +389,16 @@ export default function JoinRequests() {
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
               <thead>
                 <tr style={{ color: '#67e8f9', fontSize: '13px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                  <th style={{ padding: '12px 10px', width: '38px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={allPendingSelected}
+                      onChange={handleToggleSelectAll}
+                      disabled={pendingRequests.length === 0}
+                      title="Select / Deselect all pending"
+                      style={{ cursor: 'pointer', transform: 'scale(1.15)', accentColor: '#06b6d4' }}
+                    />
+                  </th>
                   <th style={{ padding: '12px 10px' }}>Student Name</th>
                   <th style={{ padding: '12px 10px' }}>Roll / ID</th>
                   <th style={{ padding: '12px 10px' }}>Email</th>
@@ -280,6 +410,7 @@ export default function JoinRequests() {
               <tbody>
                 {requests.map((req) => {
                   const isPending = req.status === 'pending';
+                  const isSelected = selectedIds.has(req.id);
                   const statusColors = {
                     pending: { bg: 'rgba(251, 191, 36, 0.15)', text: '#fbbf24' },
                     approved: { bg: 'rgba(74, 222, 128, 0.15)', text: '#4ade80' },
@@ -292,9 +423,23 @@ export default function JoinRequests() {
                       key={req.id}
                       style={{
                         borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        background: isSelected ? 'rgba(6, 182, 212, 0.08)' : 'transparent',
                         fontSize: '14px',
+                        transition: 'background 0.15s ease',
                       }}
                     >
+                      <td style={{ padding: '14px 10px', textAlign: 'center' }}>
+                        {isPending ? (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleRow(req.id)}
+                            style={{ cursor: 'pointer', transform: 'scale(1.15)', accentColor: '#06b6d4' }}
+                          />
+                        ) : (
+                          <span style={{ color: '#475569' }}>-</span>
+                        )}
+                      </td>
                       <td style={{ padding: '14px 10px', fontWeight: 600 }}>
                         {req.student_name}
                       </td>

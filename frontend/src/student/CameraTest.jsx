@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { loadModels, areModelsLoaded } from '../face/loadModels.js'
 import { getDescriptor, euclideanDistance } from '../face/detect.js'
+import { registerActiveStream } from '../utils/cameraManager.js'
 
 export default function CameraTest() {
   // Camera state
@@ -74,6 +75,7 @@ export default function CameraTest() {
         return
       }
 
+      registerActiveStream(stream)
       streamRef.current = stream
 
       if (videoRef.current) {

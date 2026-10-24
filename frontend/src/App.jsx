@@ -1,5 +1,7 @@
 
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { stopAllGlobalCameras, isCameraAllowedPage } from './utils/cameraManager.js';
 
 import Login from './auth/Login.jsx';
 import Register from './auth/Register.jsx';
@@ -8,6 +10,39 @@ import StudentDashboard from './student/StudentDashboard.jsx';
 import Enroll from './faculty/Enroll.jsx';
 import JoinRequests from './faculty/JoinRequests.jsx';
 import CameraTest from './student/CameraTest.jsx';
+import StudentAttendanceScanner from './student/StudentAttendanceScanner.jsx';
+
+function GlobalCameraGuard() {
+  const location = useLocation();
+
+  useEffect(() => {
+    // If navigating to any page where camera is not permitted, immediately kill all camera hardware
+    if (!isCameraAllowedPage(location.pathname)) {
+      stopAllGlobalCameras();
+    }
+
+    // Periodic safety check every 1s when on non-camera pages to kill any orphan tracks
+    const timer = setInterval(() => {
+      if (!isCameraAllowedPage(location.pathname)) {
+        stopAllGlobalCameras();
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const handleUnload = () => stopAllGlobalCameras();
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+    };
+  }, []);
+
+  return null;
+}
 
 function ProtectedFaculty() {
   const token = sessionStorage.getItem('token');
@@ -31,6 +66,18 @@ function ProtectedStudent() {
   }
 
   return <StudentDashboard />;
+}
+
+function ProtectedStudentScan() {
+  const token = sessionStorage.getItem('token');
+  const isLoggedIn = sessionStorage.getItem('isLoggedIn');
+  const role = (sessionStorage.getItem('role') || '').toLowerCase();
+
+  if (isLoggedIn !== 'true' || !token || role !== 'student') {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <StudentAttendanceScanner />;
 }
 
 function ProtectedEnroll() {
@@ -59,17 +106,21 @@ function ProtectedJoinRequests() {
 
 function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to="/login" replace />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/faculty" element={<ProtectedFaculty />} />
-      <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />
-      <Route path="/faculty/enroll" element={<ProtectedEnroll />} />
-      <Route path="/student" element={<ProtectedStudent />} />
-      <Route path="/camera-test" element={<CameraTest />} />
-      <Route path="*" element={<Navigate to="/login" replace />} />
-    </Routes>
+    <>
+      <GlobalCameraGuard />
+      <Routes>
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/faculty" element={<ProtectedFaculty />} />
+        <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />
+        <Route path="/faculty/enroll" element={<ProtectedEnroll />} />
+        <Route path="/student" element={<ProtectedStudent />} />
+        <Route path="/student/scan" element={<ProtectedStudentScan />} />
+        <Route path="/camera-test" element={<CameraTest />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </>
   );
 }
 

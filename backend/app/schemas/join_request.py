@@ -3,8 +3,10 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class CreateJoinRequest(BaseModel):
-    faculty_email: EmailStr
+    join_code: str | None = None
+    faculty_email: EmailStr | None = None
     course_code: str | None = None
+
 
 
 class JoinRequestMessageResponse(BaseModel):

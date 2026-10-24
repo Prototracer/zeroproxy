@@ -51,10 +51,10 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 # ── Configuration constants ──────────────────────────────────────────────────
 
-TICKET_TTL_SECONDS: int = 30          # handbook §1 "~30 s"
-MIN_SUBMIT_SECONDS: float = 2.0       # handbook §3.1 check 2
-CHALLENGE_WINDOW_MS: int = 4000       # handbook §3.1 check 2: "within 4 s"
-CHALLENGE_MARGIN_MS: int = 500        # small margin for legitimate latency
+TICKET_TTL_SECONDS: int = 120         # 2 minutes: allows students to comfortably retry face challenge
+MIN_SUBMIT_SECONDS: float = 1.5       # handbook §3.1 check 2
+CHALLENGE_WINDOW_MS: int = 7000       # comfortably allows sequential combo 1 -> combo 2
+CHALLENGE_MARGIN_MS: int = 2000       # small margin for legitimate network & mobile latency
 
 OPEN_EYE_MIN: float = 0.2            # handbook §3.1 check 6
 FRONTAL_MAX: float = 20.0            # handbook §3.1 check 6
@@ -169,12 +169,33 @@ async def scan_qr(
     # Actually the count check is at submit; scan can still proceed to let the student try again
     # if they haven't hit the limit. The rate_limiter.hit() call happens at submit.
 
-    # 7. Issue single-use ticket
+    # 7. Issue single-use ticket with randomized liveness challenge
+    # Supported challenges:
+    # 1. blink
+    # 2. double_blink
+    # 3. smile
+    # 4. turn_left
+    # 5. turn_right
+    # 6. nod_head
+    # 8. raise_eyebrows
+    # 9. combo_smile_blink, combo_turn_blink, combo_smile_turn
+    CHALLENGE_POOL = [
+        "blink",
+        "double_blink",
+        "turn_left",
+        "turn_right",
+        "nod_head",
+        "raise_eyebrows",
+        "combo_turn_blink",
+        "combo_nod_blink",
+    ]
+    chosen_challenge = secrets.choice(CHALLENGE_POOL)
+
     nonce = secrets.token_urlsafe(16)
     ticket_id = ticket_store.issue(
         user_id=student.id,
         session_id=session.id,
-        challenge="blink",
+        challenge=chosen_challenge,
         nonce=nonce,
         ttl_seconds=TICKET_TTL_SECONDS,
     )
@@ -182,7 +203,7 @@ async def scan_qr(
     return ScanResponse(
         ticket_id=ticket_id,
         nonce=nonce,
-        challenge="blink",
+        challenge=chosen_challenge,
         session_id=session.id,
     )
 
@@ -305,10 +326,9 @@ async def submit_attendance(
     if len(body.landmark_series) > 80:
         _record_failure_and_raise("bad_payload")
 
-    # ── Check 4: Blink challenge evidence ────────────────────────────────────
-    if ticket.challenge == "blink":
-        if not _detect_blink(body.landmark_series):
-            _record_failure_and_raise("challenge_failed")
+    # ── Check 4: Liveness challenge evidence ─────────────────────────────────
+    if not _verify_liveness_challenge(ticket.challenge, body.landmark_series):
+        _record_failure_and_raise("challenge_failed")
 
     # ── Check 5: Single face ─────────────────────────────────────────────────
     series = body.landmark_series
@@ -423,31 +443,133 @@ async def submit_attendance(
     )
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers & Liveness Challenge Detectors ───────────────────────────────────
 
 def _detect_blink(landmark_series: list) -> bool:
-    """
-    Check for a blink event in the landmark series.
-
-    A blink is defined as: both eyes close (eye openness drops below
-    BLINK_CLOSE_THRESHOLD) and then reopen (rises above BLINK_OPEN_THRESHOLD).
-    Handbook §3.2: "Both eyes close, then reopen, within the window."
-    """
-    BLINK_CLOSE_THRESHOLD = 0.15
-    BLINK_OPEN_THRESHOLD = 0.25
-
-    if not landmark_series:
+    """Check for a single blink: eyes close (relative dip, delta, or < 0.22) and reopen."""
+    if not landmark_series or len(landmark_series) < 3:
         return False
+    eye_values = [(entry.left_eye + entry.right_eye) / 2 for entry in landmark_series]
+    baseline_eye = max(eye_values[:min(5, len(eye_values))])
+    min_eye = min(eye_values)
 
     closed = False
-    for entry in landmark_series:
-        avg_eye = (entry.left_eye + entry.right_eye) / 2
-        if not closed and avg_eye < BLINK_CLOSE_THRESHOLD:
+    for avg_eye in eye_values:
+        if not closed and (avg_eye < 0.22 or avg_eye <= baseline_eye * 0.85 or (baseline_eye - avg_eye) >= 0.025):
             closed = True
-        elif closed and avg_eye > BLINK_OPEN_THRESHOLD:
-            return True  # Eyes closed then reopened
-
+        elif closed and (avg_eye > 0.19 or avg_eye >= min_eye + 0.02):
+            return True
     return False
+
+
+def _detect_double_blink(landmark_series: list) -> bool:
+    """Check for two distinct blinks in sequence."""
+    if not landmark_series or len(landmark_series) < 5:
+        return False
+    eye_values = [(entry.left_eye + entry.right_eye) / 2 for entry in landmark_series]
+    baseline_eye = max(eye_values[:min(5, len(eye_values))])
+
+    blinks = 0
+    in_blink = False
+    min_in_blink = 0.28
+    for avg_eye in eye_values:
+        if not in_blink and (avg_eye < 0.22 or avg_eye <= baseline_eye * 0.85 or (baseline_eye - avg_eye) >= 0.025):
+            in_blink = True
+            min_in_blink = avg_eye
+        elif in_blink:
+            if avg_eye < min_in_blink:
+                min_in_blink = avg_eye
+            if avg_eye > 0.19 or avg_eye >= min_in_blink + 0.02:
+                blinks += 1
+                in_blink = False
+                if blinks >= 2:
+                    return True
+    return False
+
+
+def _detect_smile(landmark_series: list) -> bool:
+    """Check for a smile: mouth ratio rises (> 0.22) and relaxes."""
+    if not landmark_series:
+        return False
+    baseline = sum(e.mouth_ratio for e in landmark_series[:5]) / max(len(landmark_series[:5]), 1)
+    max_mouth = max(e.mouth_ratio for e in landmark_series)
+    return max_mouth >= 0.22 and (max_mouth - baseline) >= 0.04
+
+
+def _detect_turn_left(landmark_series: list) -> bool:
+    """Check for head turn left: yawDeg dips negative (< -12°) then returns."""
+    turned = False
+    for entry in landmark_series:
+        if entry.yaw_deg < -12.0:
+            turned = True
+        elif turned and entry.yaw_deg > -8.0:
+            return True
+    return turned
+
+
+def _detect_turn_right(landmark_series: list) -> bool:
+    """Check for head turn right: yawDeg rises positive (> +12°) then returns."""
+    turned = False
+    for entry in landmark_series:
+        if entry.yaw_deg > 12.0:
+            turned = True
+        elif turned and entry.yaw_deg < 8.0:
+            return True
+    return turned
+
+
+def _detect_nod(landmark_series: list) -> bool:
+    """Check for head nod: pitchDeg shifts significantly (> 10° or < -10°)."""
+    if not landmark_series:
+        return False
+    min_pitch = min(getattr(e, "pitch_deg", 0.0) for e in landmark_series)
+    max_pitch = max(getattr(e, "pitch_deg", 0.0) for e in landmark_series)
+    return (max_pitch - min_pitch) >= 8.0 or abs(min_pitch) >= 7.0 or abs(max_pitch) >= 7.0
+
+
+def _detect_eyebrow_raise(landmark_series: list) -> bool:
+    """Check for eyebrow raise: distance between eyebrow and eye increases above baseline."""
+    if not landmark_series or len(landmark_series) < 3:
+        return False
+    raises = [getattr(e, "eyebrow_raise", 0.0) for e in landmark_series]
+    if not raises or all(r == 0.0 for r in raises):
+        return False
+
+    baseline = sum(raises[:min(5, len(raises))]) / min(5, len(raises))
+    max_raise = max(raises)
+    min_raise = min(raises)
+
+    return (max_raise - baseline) >= 0.035 or (max_raise - min_raise) >= 0.035 or max_raise >= (baseline * 1.07) or max_raise >= 0.28
+
+
+def _verify_liveness_challenge(challenge: str, landmark_series: list) -> bool:
+    """Dispatches the verification to the corresponding challenge detector."""
+    if not landmark_series or len(landmark_series) < 3:
+        return False
+
+    if challenge == "blink":
+        return _detect_blink(landmark_series)
+    elif challenge == "double_blink":
+        return _detect_double_blink(landmark_series)
+    elif challenge == "smile":
+        return _detect_smile(landmark_series)
+    elif challenge == "turn_left":
+        return _detect_turn_left(landmark_series)
+    elif challenge == "turn_right":
+        return _detect_turn_right(landmark_series)
+    elif challenge == "nod_head":
+        return _detect_nod(landmark_series)
+    elif challenge == "raise_eyebrows":
+        return _detect_eyebrow_raise(landmark_series)
+    elif challenge == "combo_smile_blink":
+        return _detect_smile(landmark_series) and _detect_blink(landmark_series)
+    elif challenge == "combo_turn_blink":
+        return (_detect_turn_left(landmark_series) or _detect_turn_right(landmark_series)) and _detect_blink(landmark_series)
+    elif challenge == "combo_nod_blink":
+        return _detect_nod(landmark_series) and _detect_blink(landmark_series)
+
+    # Default to single blink if unknown
+    return _detect_blink(landmark_series)
 
 
 def _get_client_ip(request: Request) -> str | None:

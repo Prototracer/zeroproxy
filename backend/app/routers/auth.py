@@ -29,7 +29,12 @@ from app.core.security import (
 )
 from app.db import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    RegisterRequest,
+    UserResponse,
+)
 from app.stores.memory import refresh_token_store, token_denylist
 
 class MemoryTokenDenylist:
@@ -129,8 +134,14 @@ async def register(
             detail="Email is already registered",
         )
 
+    roll_no = (
+        request.roll_no.strip()
+        if request.roll_no and request.roll_no.strip()
+        else request.email.split("@")[0].upper()
+    )
+
     result = await db.execute(
-        select(User).where(User.roll_no == request.roll_no)
+        select(User).where(User.roll_no == roll_no)
     )
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -141,7 +152,7 @@ async def register(
     user = User(
         name=request.name,
         email=request.email,
-        roll_no=request.roll_no,
+        roll_no=roll_no,
         password_hash=hash_password(request.password),
         role="student",
         status="pending",
@@ -281,7 +292,19 @@ async def refresh_session(
 
     return {
         "access_token": access_token,
+        "accessToken": access_token,
+        "token": access_token,
         "token_type": "bearer",
+        "role": getattr(user, "role", "student"),
+        "user": {
+            "id": getattr(user, "id", None),
+            "name": getattr(user, "name", ""),
+            "email": getattr(user, "email", ""),
+            "roll_no": getattr(user, "roll_no", ""),
+            "role": getattr(user, "role", "student"),
+            "status": getattr(user, "status", "active"),
+            "must_change_password": getattr(user, "must_change_password", False),
+        },
     }
 
 
@@ -356,5 +379,51 @@ async def login(
 
     return {
         "access_token": access_token,
+        "accessToken": access_token,
+        "token": access_token,
         "token_type": "bearer",
+        "role": user.role,
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "roll_no": user.roll_no,
+            "role": user.role,
+            "status": user.status,
+            "must_change_password": user.must_change_password,
+        },
     }
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change password when must_change_password or on user request (handbook §7)."""
+    if not verify_password(body.current_password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password does not match",
+        )
+
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password cannot be the same as current password",
+        )
+
+    if is_common_password(body.new_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This password is too common. Please choose a stronger password.",
+        )
+
+    current_user.password_hash = hash_password(body.new_password)
+    current_user.must_change_password = False
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return {"message": "Password changed successfully"}

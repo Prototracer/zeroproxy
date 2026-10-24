@@ -1,15 +1,27 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiRequest } from '../api/client.js';
 
 function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
 
+  // Role toggle: 'student' or 'faculty'
+  const [activeTab, setActiveTab] = useState('student');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // Check URL param ?role=faculty or ?role=student
+    const params = new URLSearchParams(location.search);
+    const roleParam = params.get('role');
+    if (roleParam === 'faculty' || roleParam === 'student') {
+      setActiveTab(roleParam);
+    }
+  }, [location.search]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -32,10 +44,19 @@ function Login() {
       });
 
       const data = response?.data || response;
-      const token = data?.token || data?.accessToken;
-      const userRole = String(
+      const token = data?.token || data?.accessToken || data?.access_token;
+      let userRole = String(
         data?.user?.role || data?.role || response?.user?.role || ''
       ).toLowerCase();
+
+      if (!userRole && token) {
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          userRole = String(payload?.role || '').toLowerCase();
+        } catch {
+          // ignore decode error
+        }
+      }
 
       if (!token) {
         throw new Error(
@@ -43,17 +64,37 @@ function Login() {
         );
       }
 
-      if (!['student', 'faculty'].includes(userRole)) {
+      if (!['student', 'faculty', 'admin'].includes(userRole)) {
         throw new Error('Your account role was not recognized.');
+      }
+
+      // Enforce strict portal access: prevent cross-portal logins
+      if (activeTab === 'faculty' && userRole === 'student') {
+        throw new Error(
+          'Access Denied: This is a Student account. Please switch to the "Student Portal" tab to log in.'
+        );
+      }
+
+      if (activeTab === 'student' && (userRole === 'faculty' || userRole === 'admin')) {
+        throw new Error(
+          'Access Denied: This is a Faculty/Admin account. Please switch to the "Faculty Portal" tab to log in.'
+        );
       }
 
       sessionStorage.setItem('token', token);
       sessionStorage.setItem('isLoggedIn', 'true');
       sessionStorage.setItem('role', userRole);
 
-      navigate(userRole === 'faculty' ? '/faculty' : '/student');
+      // Route accordingly
+      setTimeout(() => {
+        if (userRole === 'faculty' || userRole === 'admin') {
+          navigate('/faculty');
+        } else {
+          navigate('/student');
+        }
+      }, 350);
     } catch (error) {
-      setMessage(error?.message || 'Login failed. Please try again.');
+      setMessage(error?.message || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
@@ -99,21 +140,16 @@ function Login() {
       <div
         style={{
           width: '100%',
-          maxWidth: '430px',
+          maxWidth: '440px',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: '28px',
+          gap: '24px',
         }}
       >
-        {/* App name and quotation */}
-        <section
-          style={{
-            width: '100%',
-            textAlign: 'center',
-          }}
-        >
+        {/* App branding */}
+        <section style={{ width: '100%', textAlign: 'center' }}>
           <Link
             to="/"
             style={{
@@ -121,7 +157,7 @@ function Login() {
               alignItems: 'center',
               justifyContent: 'center',
               gap: '10px',
-              marginBottom: '20px',
+              marginBottom: '16px',
               color: '#fff',
               textDecoration: 'none',
             }}
@@ -151,7 +187,7 @@ function Login() {
               color: '#8be4ff',
               fontSize: '11px',
               letterSpacing: '1.5px',
-              margin: '0 0 12px',
+              margin: '0 0 10px',
             }}
           >
             SMART ATTENDANCE SYSTEM
@@ -159,7 +195,7 @@ function Login() {
 
           <h1
             style={{
-              fontSize: 'clamp(28px, 5vw, 38px)',
+              fontSize: 'clamp(26px, 5vw, 36px)',
               lineHeight: 1.2,
               margin: 0,
               background: 'linear-gradient(100deg, #fff, #80ddff 55%, #ae8bff)',
@@ -172,37 +208,114 @@ function Login() {
           </h1>
         </section>
 
-        {/* Glassmorphism login form */}
+        {/* Login Container */}
         <section
           className="glass-card"
           style={{
             width: '100%',
-            maxWidth: '430px',
-            padding: '34px 30px',
+            maxWidth: '440px',
+            padding: '30px 28px',
             boxSizing: 'border-box',
+            background: 'rgba(9, 18, 45, 0.75)',
+            border: '1px solid rgba(113, 168, 255, 0.25)',
+            borderRadius: '20px',
+            backdropFilter: 'blur(16px)',
+            boxShadow: '0 16px 40px rgba(0,0,0,0.4)',
           }}
         >
-          <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-            <h2 style={{ fontSize: '27px', margin: '0 0 9px' }}>
-              Welcome to ZeroProxy
+          {/* Two-Type Login Toggle */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '8px',
+              background: 'rgba(3, 9, 28, 0.6)',
+              padding: '5px',
+              borderRadius: '14px',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              marginBottom: '26px',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('student');
+                setMessage('');
+              }}
+              style={{
+                padding: '11px',
+                borderRadius: '10px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 650,
+                fontSize: '13px',
+                transition: 'all 0.2s ease',
+                background:
+                  activeTab === 'student'
+                    ? 'linear-gradient(135deg, #0284c7, #2563eb)'
+                    : 'transparent',
+                color: activeTab === 'student' ? '#ffffff' : '#94a3b8',
+                boxShadow:
+                  activeTab === 'student'
+                    ? '0 4px 12px rgba(37, 99, 235, 0.35)'
+                    : 'none',
+              }}
+            >
+              🎓 Student Portal
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('faculty');
+                setMessage('');
+              }}
+              style={{
+                padding: '11px',
+                borderRadius: '10px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 650,
+                fontSize: '13px',
+                transition: 'all 0.2s ease',
+                background:
+                  activeTab === 'faculty'
+                    ? 'linear-gradient(135deg, #7c3aed, #4f46e5)'
+                    : 'transparent',
+                color: activeTab === 'faculty' ? '#ffffff' : '#94a3b8',
+                boxShadow:
+                  activeTab === 'faculty'
+                    ? '0 4px 12px rgba(124, 58, 237, 0.35)'
+                    : 'none',
+              }}
+            >
+              👨‍🏫 Faculty Portal
+            </button>
+          </div>
+
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '24px', margin: '0 0 6px', fontWeight: 700 }}>
+              {activeTab === 'faculty' ? 'Faculty Sign In' : 'Student Sign In'}
             </h2>
 
             <p style={{ fontSize: '13px', color: '#9eb3d9', margin: 0 }}>
-              Sign in to your ZeroProxy account
+              {activeTab === 'faculty'
+                ? 'Sign in to create sessions, display rotating QR, & enroll students'
+                : 'Sign in to track verified attendance & scan lecture QR codes'}
             </p>
           </div>
 
           <form onSubmit={handleLogin}>
-            <div style={{ marginBottom: '20px' }}>
+            <div style={{ marginBottom: '18px' }}>
               <label htmlFor="login-email" style={labelStyle}>
-                Email Address
+                {activeTab === 'faculty' ? 'Faculty Email Address' : 'Student Email Address'}
               </label>
 
               <input
                 className="glass-hover"
                 id="login-email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder={activeTab === 'faculty' ? 'faculty@university.edu' : 'student@university.edu'}
                 value={email}
                 onChange={(event) => {
                   setEmail(event.target.value);
@@ -214,7 +327,7 @@ function Login() {
               />
             </div>
 
-            <div style={{ marginBottom: '24px' }}>
+            <div style={{ marginBottom: '22px' }}>
               <label htmlFor="login-password" style={labelStyle}>
                 Password
               </label>
@@ -240,12 +353,8 @@ function Login() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    setShowPassword((previous) => !previous)
-                  }
-                  aria-label={
-                    showPassword ? 'Hide password' : 'Show password'
-                  }
+                  onClick={() => setShowPassword((previous) => !previous)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                   style={{
                     position: 'absolute',
                     right: '12px',
@@ -274,16 +383,25 @@ function Login() {
                 border: 'none',
                 borderRadius: '11px',
                 background:
-                  'linear-gradient(100deg, #13bdf5, #195ad1 48%, #013bdf)',
+                  activeTab === 'faculty'
+                    ? 'linear-gradient(100deg, #9333ea, #6366f1)'
+                    : 'linear-gradient(100deg, #13bdf5, #195ad1 48%, #013bdf)',
                 color: '#fff',
                 fontSize: '14px',
-                fontWeight: 750,
-                boxShadow: '0 8px 26px rgba(66,111,255,.25)',
+                fontWeight: 700,
+                boxShadow:
+                  activeTab === 'faculty'
+                    ? '0 8px 24px rgba(147, 51, 234, 0.35)'
+                    : '0 8px 24px rgba(66, 111, 255, 0.3)',
                 cursor: loading ? 'not-allowed' : 'pointer',
                 opacity: loading ? 0.7 : 1,
               }}
             >
-              {loading ? 'Signing in...' : 'Sign In →'}
+              {loading
+                ? 'Authenticating...'
+                : activeTab === 'faculty'
+                ? 'Sign In to Faculty Portal →'
+                : 'Sign In to Student Portal →'}
             </button>
           </form>
 
@@ -291,11 +409,11 @@ function Login() {
             <p
               role="alert"
               style={{
-                marginTop: '18px',
+                marginTop: '16px',
                 padding: '12px',
                 borderRadius: '10px',
-                background: 'rgba(248,113,113,.1)',
-                border: '1px solid rgba(248,113,113,.25)',
+                background: 'rgba(248,113,113,.12)',
+                border: '1px solid rgba(248,113,113,.3)',
                 color: '#fca5a5',
                 fontSize: '12px',
                 lineHeight: 1.6,
@@ -311,7 +429,7 @@ function Login() {
               textAlign: 'center',
               fontSize: '13px',
               color: '#9eb3d9',
-              marginTop: '25px',
+              marginTop: '22px',
               marginBottom: 0,
             }}
           >
@@ -324,7 +442,7 @@ function Login() {
                 textDecoration: 'none',
               }}
             >
-              Create account
+              Register here
             </Link>
           </p>
         </section>
