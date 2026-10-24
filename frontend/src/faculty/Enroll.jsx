@@ -76,7 +76,7 @@ export default function Enroll() {
 
   function cancelEnrollment() {
     setSelectedStudent(null);
-    setMessage('Enrolment selection cancelled.');
+    setMessage('Enrollment selection cancelled.');
   }
 
   return (
@@ -101,7 +101,7 @@ export default function Enroll() {
               ← Back to Dashboard
             </button>
             <h1 style={{ margin: 0, fontSize: '26px', color: '#67e8f9', fontWeight: 700 }}>
-              Student Biometric Enrolment
+              Student Face Enrollment
             </h1>
             <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '14px' }}>
               Scoped list of students with approved join requests awaiting face enrollment
@@ -130,7 +130,7 @@ export default function Enroll() {
 
         {/* Counter Card */}
         <div style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '14px', padding: '20px', marginBottom: '24px' }}>
-          <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Pending Face Enrolment</p>
+          <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Pending Face Enrollment</p>
           <h2 style={{ margin: '8px 0 0', fontSize: '32px', color: '#fbbf24', fontWeight: 700 }}>
             {students.length}
           </h2>
@@ -206,7 +206,7 @@ export default function Enroll() {
                   opacity: isSubmitting ? 0.7 : 1,
                 }}
               >
-                {isSubmitting ? 'Saving Enrollment...' : 'Complete Face Enrolment & Activate'}
+                {isSubmitting ? 'Saving Enrollment...' : 'Complete Face Enrollment & Activate'}
               </button>
 
               <button
@@ -273,7 +273,7 @@ export default function Enroll() {
                         color: '#fbbf24',
                       }}
                     >
-                      Pending Face Enrolment
+                      Pending Face Enrollment
                     </span>
                   </div>
 
@@ -291,7 +291,7 @@ export default function Enroll() {
                       cursor: 'pointer',
                     }}
                   >
-                    Start Enrolment
+                    Start Face Enrollment
                   </button>
                 </section>
               ))}

@@ -177,7 +177,7 @@ export default function JoinRequests() {
               cursor: 'pointer',
             }}
           >
-            Biometric Enrollment →
+            Face Enrollment →
           </button>
         </div>
       </header>

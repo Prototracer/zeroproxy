@@ -376,7 +376,7 @@ function FacultyDashboard() {
                 boxShadow: '0 4px 14px rgba(37, 99, 255, 0.3)',
               }}
             >
-              👥 Student Enrolment
+              👤 Face Enrollment
             </button>
 
             <button

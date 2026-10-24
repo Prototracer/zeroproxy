@@ -202,7 +202,7 @@ function StudentDashboard() {
   if (studentInfo.status === "active" && studentInfo.has_face_enrollment) {
     workflowStep = {
       title: "Step 4: Ready to Scan",
-      desc: "Your biometric enrollment is complete and verified. Click 'Scan QR / Mark Attendance' during lectures.",
+      desc: "Your face enrollment is complete and verified. Click 'Scan QR / Mark Attendance' during lectures.",
       color: "#4ade80",
     };
   } else if (hasApproved) {

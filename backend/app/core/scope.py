@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
+from app.models.face_vector import FaceVector
 from app.models.join_request import JoinRequest
 from app.models.user import User
 
@@ -187,20 +188,53 @@ async def get_scoped_pending_students(
     db: AsyncSession,
     faculty: User,
 ) -> list[User]:
-    """Return ONLY faculty's students with an approved join request whose users.status is still 'pending'."""
-    # Find student IDs with approved join request to this faculty
+    """Return faculty's students with an approved join request or class enrollment who need face enrollment.
+
+    Includes students who are status 'pending' OR have not completed face enrollment (no active face vector).
+    """
+    active_face_subquery = (
+        select(FaceVector.user_id)
+        .where(
+            FaceVector.tenant_id == faculty.tenant_id,
+            FaceVector.active.is_(True),
+        )
+    )
+
     query = (
         select(User)
-        .join(JoinRequest, JoinRequest.student_id == User.id)
+        .outerjoin(
+            JoinRequest,
+            (JoinRequest.student_id == User.id)
+            & (JoinRequest.faculty_id == faculty.id)
+            & (JoinRequest.tenant_id == faculty.tenant_id)
+            & (JoinRequest.status == "approved"),
+        )
+        .outerjoin(
+            ClassEnrollment,
+            (ClassEnrollment.student_id == User.id)
+            & (ClassEnrollment.tenant_id == faculty.tenant_id),
+        )
+        .outerjoin(
+            Course,
+            (Course.id == ClassEnrollment.course_id)
+            & (Course.faculty_id == faculty.id)
+            & (Course.tenant_id == faculty.tenant_id),
+        )
         .where(
-            JoinRequest.faculty_id == faculty.id,
-            JoinRequest.tenant_id == faculty.tenant_id,
-            JoinRequest.status == "approved",
-            User.status == "pending",
+            User.tenant_id == faculty.tenant_id,
             User.role == "student",
+            or_(
+                JoinRequest.id.is_not(None),
+                Course.id.is_not(None),
+            ),
+            or_(
+                User.status == "pending",
+                User.id.not_in(active_face_subquery),
+            ),
         )
         .distinct()
         .order_by(User.id)
     )
     result = await db.execute(query)
     return list(result.scalars().all())
+
