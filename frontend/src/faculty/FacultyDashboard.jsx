@@ -123,6 +123,7 @@ function FacultyDashboard() {
       // 3. Start live attendance poller
       startLiveAttendancePoller(session.id);
       loadClasses();
+      navigate(`/faculty/sessions/${session.id}`);
     } catch (err) {
       setErrorMessage(err.message || 'Failed to start session on backend.');
     } finally {
@@ -512,23 +513,46 @@ function FacultyDashboard() {
             </div>
 
             {activeSession && (
-              <span
-                style={{
-                  background: 'rgba(74, 222, 128, 0.15)',
-                  border: '1px solid rgba(74, 222, 128, 0.4)',
-                  color: '#4ade80',
-                  padding: '6px 14px',
-                  borderRadius: '20px',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                }}
-              >
-                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', animation: 'pulse 1.5s infinite' }} />
-                Session #{activeSession.id} Active
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span
+                  style={{
+                    background: 'rgba(74, 222, 128, 0.15)',
+                    border: '1px solid rgba(74, 222, 128, 0.4)',
+                    color: '#4ade80',
+                    padding: '6px 14px',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', animation: 'pulse 1.5s infinite' }} />
+                  Session #{activeSession.id} Active
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => navigate(`/faculty/sessions/${activeSession.id}`)}
+                  style={{
+                    background: 'linear-gradient(135deg, #06b6d4, #2563eb)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '8px 14px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 8px rgba(6, 182, 212, 0.3)',
+                  }}
+                >
+                  🖥️ Open Live Display Screen
+                </button>
+              </div>
             )}
           </div>
 

@@ -11,6 +11,7 @@ import StudentEnroll from './student/StudentEnroll.jsx';
 import JoinRequests from './faculty/JoinRequests.jsx';
 import CameraTest from './student/CameraTest.jsx';
 import StudentAttendanceScanner from './student/StudentAttendanceScanner.jsx';
+import LiveSession from './faculty/LiveSession.jsx';
 
 function GlobalCameraGuard() {
   const location = useLocation();
@@ -104,6 +105,18 @@ function ProtectedJoinRequests() {
   return <JoinRequests />;
 }
 
+function ProtectedLiveSession() {
+  const token = sessionStorage.getItem('token');
+  const isLoggedIn = sessionStorage.getItem('isLoggedIn');
+  const role = (sessionStorage.getItem('role') || '').toLowerCase();
+
+  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <LiveSession />;
+}
+
 function App() {
   return (
     <>
@@ -113,6 +126,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/faculty" element={<ProtectedFaculty />} />
+        <Route path="/faculty/sessions/:id" element={<ProtectedLiveSession />} />
         <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />
         <Route path="/faculty/enroll" element={<Navigate to="/faculty" replace />} />
         <Route path="/student" element={<ProtectedStudent />} />
