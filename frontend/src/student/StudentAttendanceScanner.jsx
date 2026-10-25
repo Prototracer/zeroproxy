@@ -9,10 +9,11 @@ import { registerActiveStream, stopAllGlobalCameras } from '../utils/cameraManag
 export default function StudentAttendanceScanner() {
   const navigate = useNavigate();
 
-  // Workflow steps: 'qr_scan' -> 'qr_validated' -> 'face_verify' -> 'success' | 'error'
+  // Workflow steps: 'qr_scan' -> 'qr_validated' -> 'face_verify' -> 'success' | 'already_marked' | 'not_enrolled' | 'session_ended' | 'no_face' | 'error'
   const [step, setStep] = useState('qr_scan');
   const [statusMessage, setStatusMessage] = useState('Position your camera over the lecture QR code.');
   const [errorMessage, setErrorMessage] = useState('');
+  const [redirectCountdown, setRedirectCountdown] = useState(0);
 
   // Scanned QR & Ticket state
   const [ticketInfo, setTicketInfo] = useState(null); // { ticket_id, nonce, challenge, session_id }
@@ -76,6 +77,24 @@ export default function StudentAttendanceScanner() {
       stopAllCameras();
     };
   }, []);
+
+  // Automatic redirect timer when user encounters terminal error (e.g. not enrolled or session ended)
+  useEffect(() => {
+    if (step === 'not_enrolled' || step === 'session_ended') {
+      setRedirectCountdown(6);
+      const timer = setInterval(() => {
+        setRedirectCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            handleLeave();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [step]);
 
   // Comprehensive camera hardware release helper
   function stopAllCameras() {
@@ -281,6 +300,8 @@ export default function StudentAttendanceScanner() {
       setStatusMessage('✓ QR Token Verified! Next: Complete instant face liveness verification.');
     } catch (err) {
       const errDetail = String(err?.message || '');
+
+      // 1. Check for Already Marked Attendance
       if (errDetail.includes('already_marked') || errDetail.toLowerCase().includes('already marked')) {
         await stopQrScanner();
         stopAllGlobalCameras();
@@ -289,6 +310,46 @@ export default function StudentAttendanceScanner() {
         return;
       }
 
+      // 2. Check for Not Enrolled in Course / Class Not Joined
+      if (
+        errDetail.toLowerCase().includes('not enrolled') ||
+        errDetail.toLowerCase().includes('not joined') ||
+        errDetail.toLowerCase().includes('course')
+      ) {
+        await stopQrScanner();
+        stopAllGlobalCameras();
+        setStep('not_enrolled');
+        setErrorMessage(
+          'You have not joined this class yet. Please join the course from your student dashboard and wait for instructor approval before marking attendance.'
+        );
+        setIsProcessing(false);
+        return;
+      }
+
+      // 3. Check for Session Ended / Inactive
+      if (
+        errDetail.toLowerCase().includes('session_ended') ||
+        errDetail.toLowerCase().includes('session ended')
+      ) {
+        await stopQrScanner();
+        stopAllGlobalCameras();
+        setStep('session_ended');
+        setErrorMessage('This lecture attendance session has ended or is no longer active.');
+        setIsProcessing(false);
+        return;
+      }
+
+      // 4. Check for No Active Face Biometrics
+      if (errDetail.toLowerCase().includes('face enrollment')) {
+        await stopQrScanner();
+        stopAllGlobalCameras();
+        setStep('no_face');
+        setErrorMessage('Face biometric enrollment is required before marking attendance.');
+        setIsProcessing(false);
+        return;
+      }
+
+      // 5. Temporary QR validation error (expired rotating window / invalid MAC)
       setErrorMessage(err?.message || 'Failed to validate QR code. It may have expired. Please scan again.');
       setIsProcessing(false);
 
@@ -434,15 +495,24 @@ export default function StudentAttendanceScanner() {
         return;
       }
 
-      // Check if fatal terminal error (over limit or session closed)
+      // Check if fatal terminal error (over limit or session closed or not enrolled)
       if (
         errText.includes('too_many_attempts') ||
         errText.includes('session_ended') ||
-        errText.includes('Account is pending')
+        errText.includes('Account is pending') ||
+        errText.toLowerCase().includes('not enrolled') ||
+        errText.toLowerCase().includes('course')
       ) {
         stopAllCameras();
-        setStep('error');
-        setErrorMessage(errText);
+        if (errText.toLowerCase().includes('not enrolled') || errText.toLowerCase().includes('course')) {
+          setStep('not_enrolled');
+          setErrorMessage(
+            'You have not joined this class yet. Please join the course from your student dashboard before marking attendance.'
+          );
+        } else {
+          setStep('error');
+          setErrorMessage(errText);
+        }
       } else {
         // Server rejected the submission. Since the ticket was consumed by the server,
         // the student must re-scan the QR code to get a fresh ticket.
@@ -630,6 +700,24 @@ export default function StudentAttendanceScanner() {
             <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#cbd5e1' }}>
               Point your camera at the rotating QR code on your instructor's screen.
             </p>
+
+            {errorMessage && (
+              <div
+                style={{
+                  marginBottom: '14px',
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  background: 'rgba(239, 68, 68, 0.2)',
+                  border: '1px solid rgba(239, 68, 68, 0.5)',
+                  color: '#fca5a5',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  textAlign: 'center',
+                }}
+              >
+                ⚠️ {errorMessage}
+              </div>
+            )}
 
             <div
               id={qrRegionId}
@@ -1023,37 +1111,224 @@ export default function StudentAttendanceScanner() {
           </div>
         )}
 
+        {/* ── CARD 4C: NOT ENROLLED / CLASS NOT JOINED STEP ── */}
+        {step === 'not_enrolled' && (
+          <div
+            style={{
+              background: 'rgba(15, 23, 42, 0.95)',
+              border: '2px solid #ef4444',
+              borderRadius: '16px',
+              padding: '32px 24px',
+              textAlign: 'center',
+              boxShadow: '0 12px 40px rgba(239, 68, 68, 0.25)',
+            }}
+          >
+            <div style={{ fontSize: '52px', marginBottom: '12px' }}>🚫</div>
+            <h2 style={{ margin: '0 0 8px', fontSize: '22px', color: '#fca5a5' }}>
+              Not Enrolled in This Class
+            </h2>
+            <div
+              style={{
+                display: 'inline-block',
+                margin: '6px 0 16px',
+                padding: '4px 14px',
+                borderRadius: '20px',
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.5)',
+                color: '#f87171',
+                fontSize: '13px',
+                fontWeight: 700,
+              }}
+            >
+              Class Enrollment Required
+            </div>
+            <p style={{ margin: '0 0 16px', fontSize: '14px', color: '#cbd5e1', lineHeight: 1.5 }}>
+              {errorMessage || 'You have not joined this course yet. Please submit a join request or enter the course join code from your student dashboard and wait for instructor approval.'}
+            </p>
+            {redirectCountdown > 0 && (
+              <p style={{ margin: '0 0 20px', fontSize: '12px', color: '#94a3b8' }}>
+                Returning to dashboard in {redirectCountdown} second{redirectCountdown === 1 ? '' : 's'}...
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={handleLeave}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 700,
+                fontSize: '14px',
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(239, 68, 68, 0.35)',
+              }}
+            >
+              ← Back to Dashboard
+            </button>
+          </div>
+        )}
+
+        {/* ── CARD 4D: SESSION ENDED STEP ── */}
+        {step === 'session_ended' && (
+          <div
+            style={{
+              background: 'rgba(15, 23, 42, 0.95)',
+              border: '2px solid #f59e0b',
+              borderRadius: '16px',
+              padding: '32px 24px',
+              textAlign: 'center',
+              boxShadow: '0 12px 40px rgba(245, 158, 11, 0.25)',
+            }}
+          >
+            <div style={{ fontSize: '52px', marginBottom: '12px' }}>⌛</div>
+            <h2 style={{ margin: '0 0 8px', fontSize: '22px', color: '#fbbf24' }}>
+              Session Ended
+            </h2>
+            <p style={{ margin: '0 0 16px', fontSize: '14px', color: '#cbd5e1', lineHeight: 1.5 }}>
+              {errorMessage || 'This lecture attendance session has ended or is no longer active.'}
+            </p>
+            {redirectCountdown > 0 && (
+              <p style={{ margin: '0 0 20px', fontSize: '12px', color: '#94a3b8' }}>
+                Returning to dashboard in {redirectCountdown} second{redirectCountdown === 1 ? '' : 's'}...
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={handleLeave}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 700,
+                fontSize: '14px',
+                cursor: 'pointer',
+              }}
+            >
+              ← Back to Dashboard
+            </button>
+          </div>
+        )}
+
+        {/* ── CARD 4E: NO FACE ENROLLMENT STEP ── */}
+        {step === 'no_face' && (
+          <div
+            style={{
+              background: 'rgba(15, 23, 42, 0.95)',
+              border: '2px solid #3b82f6',
+              borderRadius: '16px',
+              padding: '32px 24px',
+              textAlign: 'center',
+              boxShadow: '0 12px 40px rgba(59, 130, 246, 0.25)',
+            }}
+          >
+            <div style={{ fontSize: '52px', marginBottom: '12px' }}>👤</div>
+            <h2 style={{ margin: '0 0 8px', fontSize: '22px', color: '#93c5fd' }}>
+              Biometric Enrollment Required
+            </h2>
+            <p style={{ margin: '0 0 24px', fontSize: '14px', color: '#cbd5e1', lineHeight: 1.5 }}>
+              You have not enrolled your face biometric profile yet. Complete face enrollment first to activate your account.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  stopAllCameras();
+                  navigate('/student/enroll');
+                }}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  background: 'linear-gradient(135deg, #06b6d4, #2563eb)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 700,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                }}
+              >
+                Go to Face Enrollment →
+              </button>
+              <button
+                type="button"
+                onClick={handleLeave}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  background: 'transparent',
+                  color: '#94a3b8',
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                ← Back to Dashboard
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── CARD 5: FATAL ERROR STEP ── */}
         {step === 'error' && (
           <div
             style={{
-              marginTop: '16px',
-              padding: '14px 18px',
-              borderRadius: '12px',
-              background: 'rgba(239, 68, 68, 0.15)',
+              background: 'rgba(15, 23, 42, 0.9)',
               border: '1px solid rgba(239, 68, 68, 0.4)',
-              color: '#fca5a5',
-              fontSize: '13px',
+              borderRadius: '16px',
+              padding: '24px',
               textAlign: 'center',
+              boxShadow: '0 12px 36px rgba(239, 68, 68, 0.2)',
             }}
           >
-            <p style={{ margin: '0 0 10px', fontWeight: 600 }}>⚠️ {errorMessage}</p>
-            <button
-              type="button"
-              onClick={handleRetryFromScratch}
-              style={{
-                padding: '8px 16px',
-                background: '#ef4444',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '12px',
-                cursor: 'pointer',
-              }}
-            >
-              Scan Again
-            </button>
+            <div style={{ fontSize: '40px', marginBottom: '10px' }}>⚠️</div>
+            <h2 style={{ margin: '0 0 8px', fontSize: '18px', color: '#fca5a5' }}>
+              Verification Error
+            </h2>
+            <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#cbd5e1' }}>{errorMessage}</p>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                onClick={handleRetryFromScratch}
+                style={{
+                  flex: 1,
+                  padding: '10px 16px',
+                  background: 'linear-gradient(135deg, #06b6d4, #2563eb)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                📸 Scan Again
+              </button>
+              <button
+                type="button"
+                onClick={handleLeave}
+                style={{
+                  flex: 1,
+                  padding: '10px 16px',
+                  background: 'transparent',
+                  color: '#cbd5e1',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                ← Back to Dashboard
+              </button>
+            </div>
           </div>
         )}
       </div>
