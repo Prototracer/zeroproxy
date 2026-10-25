@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,11 @@ from app.schemas.attendance import (
     SessionUnifiedAttendanceResponse,
 )
 from app.schemas.auth import ResetPasswordRequest, ResetPasswordResponse, UserResponse
+from app.services.attendance_export import (
+    generate_attendance_csv,
+    generate_attendance_xlsx,
+    get_course_attendance_export_data,
+)
 from app.services.attendance_resolution import resolve_session_effective_attendance
 from app.schemas.classes import (
     ClassResponse,
@@ -1013,4 +1018,107 @@ async def create_attendance_correction(
     await db.commit()
     await db.refresh(correction)
     return correction
+
+
+# ── Attendance Export (Phase 4) ─────────────────────────────────────────────
+
+def _parse_export_date(val: str | None, end_of_day: bool = False) -> datetime | None:
+    if not val:
+        return None
+    val = val.strip()
+    try:
+        if len(val) == 10 and "-" in val:
+            d = datetime.strptime(val, "%Y-%m-%d")
+            if end_of_day:
+                return datetime.combine(d.date(), time.max, tzinfo=timezone.utc)
+            return datetime.combine(d.date(), time.min, tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid date format: '{val}'. Expected YYYY-MM-DD.",
+        )
+
+
+@router.get(
+    "/classes/{id}/export",
+    status_code=status.HTTP_200_OK,
+)
+async def export_class_attendance(
+    id: int,
+    from_date: str | None = Query(default=None, alias="from"),
+    to_date: str | None = Query(default=None, alias="to"),
+    format: str = Query(default="xlsx"),
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export class attendance as XLSX or CSV in fixed layout:
+    Serial No, Roll No, Name, [session date/time headers in Asia/Kolkata], Total Present, Total Sessions, Attendance %.
+    Cells contain 1 (present) or 0 (absent). Formula characters (=, +, -, @) are sanitized.
+    """
+    # 1. Verify faculty owns course
+    course_res = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.tenant_id == faculty.tenant_id,
+            Course.faculty_id == faculty.id,
+        )
+    )
+    course = course_res.scalar_one_or_none()
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Class not found or not authorized",
+        )
+
+    # 2. Parse dates
+    dt_from = _parse_export_date(from_date, end_of_day=False)
+    dt_to = _parse_export_date(to_date, end_of_day=True)
+
+    # 3. Validate format
+    clean_fmt = format.lower().strip()
+    if clean_fmt not in ("xlsx", "csv"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Export format must be 'xlsx' or 'csv'",
+        )
+
+    # 4. Fetch export data
+    headers, rows, sessions = await get_course_attendance_export_data(
+        db=db,
+        course=course,
+        tenant_id=faculty.tenant_id,
+        from_date=dt_from,
+        to_date=dt_to,
+    )
+
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe_code = "".join(c for c in course.code if c.isalnum() or c in ("-", "_")) or "class"
+
+    if clean_fmt == "csv":
+        csv_data = generate_attendance_csv(headers, rows)
+        filename = f"{safe_code}_attendance_{timestamp_str}.csv"
+        return Response(
+            content=csv_data,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    else:
+        xlsx_data = generate_attendance_xlsx(
+            headers=headers,
+            rows=rows,
+            course_name=course.name,
+            course_code=course.code,
+        )
+        filename = f"{safe_code}_attendance_{timestamp_str}.xlsx"
+        return Response(
+            content=xlsx_data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
 

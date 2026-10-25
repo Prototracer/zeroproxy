@@ -196,6 +196,63 @@ function FacultyDashboard() {
     }
   }
 
+  // ── Attendance Export state (Phase 4) ───────────────────────────────────
+  const [exportModalCourse, setExportModalCourse] = useState(null);
+  const [exportFormat, setExportFormat] = useState('xlsx');
+  const [exportFromDate, setExportFromDate] = useState('');
+  const [exportToDate, setExportToDate] = useState('');
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState('');
+
+  async function handleDownloadExport(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!exportModalCourse) return;
+    setExportLoading(true);
+    setExportError('');
+    try {
+      const token = sessionStorage.getItem('token');
+      const params = new URLSearchParams();
+      if (exportFromDate) params.append('from', exportFromDate);
+      if (exportToDate) params.append('to', exportToDate);
+      params.append('format', exportFormat);
+
+      const response = await fetch(`/api/faculty/classes/${exportModalCourse.id}/export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+
+      if (!response.ok) {
+        let errMsg = 'Failed to export attendance.';
+        try {
+          const errData = await response.json();
+          errMsg = errData.detail || errMsg;
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const contentDisp = response.headers.get('content-disposition');
+      let filename = `${exportModalCourse.code}_attendance.${exportFormat}`;
+      if (contentDisp && contentDisp.includes('filename=')) {
+        const match = contentDisp.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setExportModalCourse(null);
+    } catch (err) {
+      setExportError(err.message || 'Failed to download export file.');
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
+
 
   const qrPollTimerRef = useRef(null);
   const livePollTimerRef = useRef(null);
@@ -1301,6 +1358,29 @@ function FacultyDashboard() {
                       <button
                         type="button"
                         onClick={() => {
+                          setExportModalCourse(c);
+                          setExportFormat('xlsx');
+                          setExportFromDate('');
+                          setExportToDate('');
+                          setExportError('');
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(16, 185, 129, 0.15)',
+                          border: '1px solid rgba(16, 185, 129, 0.35)',
+                          color: '#34d399',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        📊 Export
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
                           setSelectedClassId(String(c.id));
                           window.scrollTo({ top: 0, behavior: 'smooth' });
                         }}
@@ -1713,23 +1793,50 @@ function FacultyDashboard() {
                       : 'View previous lecture sessions, check unified attendance turnout, and correct attendance.'}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSessionsModalCourse(null);
-                    setSelectedSessionAttendance(null);
-                  }}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: '#94a3b8',
-                    fontSize: '20px',
-                    cursor: 'pointer',
-                    padding: '4px 8px',
-                  }}
-                >
-                  ✕
-                </button>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExportModalCourse(sessionsModalCourse);
+                      setExportFormat('xlsx');
+                      setExportFromDate('');
+                      setExportToDate('');
+                      setExportError('');
+                    }}
+                    style={{
+                      padding: '5px 12px',
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      border: '1px solid rgba(16, 185, 129, 0.4)',
+                      color: '#6ee7b7',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <span>📊</span> Export Report
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSessionsModalCourse(null);
+                      setSelectedSessionAttendance(null);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#94a3b8',
+                      fontSize: '20px',
+                      cursor: 'pointer',
+                      padding: '4px 8px',
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
 
               {/* Sub-header / Back Navigation when inspecting a session */}
@@ -2208,6 +2315,226 @@ function FacultyDashboard() {
                     }}
                   >
                     {correctionSubmitting ? 'Saving...' : 'Save Correction'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ── Modal: Export Attendance (Phase 4) ────────────────────────── */}
+        {exportModalCourse && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.8)',
+              backdropFilter: 'blur(5px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1200,
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                background: '#0f172a',
+                border: '1px solid rgba(52, 211, 153, 0.4)',
+                borderRadius: '16px',
+                padding: '24px',
+                maxWidth: '540px',
+                width: '100%',
+                boxShadow: '0 25px 50px rgba(0, 0, 0, 0.8)',
+                color: '#ffffff',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '24px' }}>📊</span>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '18px', color: '#6ee7b7', fontWeight: 700 }}>
+                      Export Attendance Report
+                    </h3>
+                    <p style={{ margin: '2px 0 0', color: '#94a3b8', fontSize: '13px' }}>
+                      {exportModalCourse.name} ({exportModalCourse.code})
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExportModalCourse(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    fontSize: '20px',
+                    cursor: 'pointer',
+                    padding: '2px 6px',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Layout Info Box */}
+              <div
+                style={{
+                  background: 'rgba(30, 41, 59, 0.5)',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(148, 163, 184, 0.15)',
+                  fontSize: '12px',
+                  color: '#94a3b8',
+                  lineHeight: '1.5',
+                  marginBottom: '16px',
+                }}
+              >
+                <strong style={{ color: '#f8fafc' }}>Fixed Layout:</strong> Serial No, Roll No, Name, chronological session columns (1 for Present, 0 for Absent, formatted in Asia/Kolkata timezone), Total Present, Total Sessions, Attendance %. Formula injection safe.
+              </div>
+
+              {exportError && (
+                <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: '6px', color: '#fca5a5', fontSize: '12px' }}>
+                  {exportError}
+                </div>
+              )}
+
+              <form onSubmit={handleDownloadExport}>
+                {/* Format selection */}
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>
+                    Choose Export Format:
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setExportFormat('xlsx')}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: exportFormat === 'xlsx' ? '2px solid #10b981' : '1px solid rgba(148, 163, 184, 0.3)',
+                        background: exportFormat === 'xlsx' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(30, 41, 59, 0.4)',
+                        color: exportFormat === 'xlsx' ? '#6ee7b7' : '#94a3b8',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      <div style={{ fontSize: '14px', fontWeight: 700 }}>Excel Spreadsheet (.xlsx)</div>
+                      <div style={{ fontSize: '11px', marginTop: '2px', opacity: 0.85 }}>Styled headers & auto-fit columns (Recommended)</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExportFormat('csv')}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: exportFormat === 'csv' ? '2px solid #10b981' : '1px solid rgba(148, 163, 184, 0.3)',
+                        background: exportFormat === 'csv' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(30, 41, 59, 0.4)',
+                        color: exportFormat === 'csv' ? '#6ee7b7' : '#94a3b8',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      <div style={{ fontSize: '14px', fontWeight: 700 }}>CSV Format (.csv)</div>
+                      <div style={{ fontSize: '11px', marginTop: '2px', opacity: 0.85 }}>Standard comma-separated text file</div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Optional Date Range */}
+                <div style={{ marginBottom: '18px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>
+                    Date Filter (Optional):
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>From Date</span>
+                      <input
+                        type="date"
+                        value={exportFromDate}
+                        onChange={(e) => setExportFromDate(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px 10px',
+                          background: 'rgba(15, 23, 42, 0.8)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          borderRadius: '6px',
+                          color: '#ffffff',
+                          fontSize: '13px',
+                          boxSizing: 'border-box',
+                          outline: 'none',
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>To Date</span>
+                      <input
+                        type="date"
+                        value={exportToDate}
+                        onChange={(e) => setExportToDate(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px 10px',
+                          background: 'rgba(15, 23, 42, 0.8)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          borderRadius: '6px',
+                          color: '#ffffff',
+                          fontSize: '13px',
+                          boxSizing: 'border-box',
+                          outline: 'none',
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                    Leave dates blank to export all sessions ever conducted for this course.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '10px', borderTop: '1px solid rgba(148, 163, 184, 0.15)' }}>
+                  <button
+                    type="button"
+                    disabled={exportLoading}
+                    onClick={() => setExportModalCourse(null)}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      background: 'transparent',
+                      color: '#cbd5e1',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={exportLoading}
+                    style={{
+                      padding: '8px 20px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: 'linear-gradient(135deg, #10b981, #059669)',
+                      color: '#ffffff',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: exportLoading ? 'not-allowed' : 'pointer',
+                      opacity: exportLoading ? 0.7 : 1,
+                      boxShadow: '0 2px 10px rgba(16, 185, 129, 0.4)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    {exportLoading ? 'Exporting...' : `⬇️ Download .${exportFormat.toUpperCase()}`}
                   </button>
                 </div>
               </form>
