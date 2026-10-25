@@ -32,6 +32,7 @@ from app.core.deps import get_current_user
 from app.core.encryption import DescriptorEncryptionError, decrypt_descriptor_set
 from app.core.face_enrollment import euclidean_distance
 from app.db import get_db
+from app.models.attendance_correction import AttendanceCorrection
 from app.models.attendance_log import AttendanceLog
 from app.models.attendance_session import AttendanceSession
 from app.models.class_enrollment import ClassEnrollment
@@ -647,7 +648,88 @@ async def get_student_attendance_summary(
     )
     rows = logs_res.all()
 
-    attended_count = len(rows)
+    # 5. Fetch any corrections for this student
+    corrections = []
+    try:
+        corr_res = await db.execute(
+            select(AttendanceCorrection).where(
+                AttendanceCorrection.student_id == student.id,
+                AttendanceCorrection.tenant_id == student.tenant_id,
+            ).order_by(AttendanceCorrection.id.asc())
+        )
+        if corr_res is not None:
+            corrections = list(corr_res.scalars().all())
+    except Exception:
+        corrections = []
+
+    # Map latest correction per session
+    corr_by_session: dict[int, AttendanceCorrection] = {c.session_id: c for c in corrections}
+
+    # Apply unified effective resolution:
+    # Latest correction wins over AttendanceLog
+    log_session_ids = set()
+    records = []
+    attended_count = 0
+
+    for log, session, course in rows:
+        log_session_ids.add(session.id)
+        corr = corr_by_session.get(session.id)
+        if corr is not None:
+            effective_status = corr.status  # "present" or "absent"
+            source = "correction"
+            marked_time = corr.created_at
+            reason = corr.reason
+        else:
+            effective_status = "present"
+            source = log.source
+            marked_time = log.marked_at
+            reason = None
+
+        if effective_status == "present":
+            attended_count += 1
+
+        records.append({
+            "id": log.id,
+            "subject": course.name,
+            "code": course.code,
+            "date": marked_time.strftime("%d %b %Y"),
+            "time": marked_time.strftime("%I:%M %p"),
+            "status": effective_status.capitalize(),
+            "source": source,
+            "reason": reason,
+            "challenge": log.challenge or "blink",
+        })
+
+    # Also check if student was marked present by correction for sessions without prior logs
+    for sess_id, corr in corr_by_session.items():
+        if corr.status == "present" and sess_id not in log_session_ids:
+            try:
+                sc_res = await db.execute(
+                    select(AttendanceSession, Course)
+                    .join(Course, Course.id == AttendanceSession.course_id)
+                    .where(
+                        AttendanceSession.id == sess_id,
+                        AttendanceSession.tenant_id == student.tenant_id,
+                    )
+                )
+                sc_row = sc_res.first()
+                if sc_row:
+                    s_obj, c_obj = sc_row
+                    attended_count += 1
+                    records.append({
+                        "id": f"corr_{corr.id}",
+                        "subject": c_obj.name,
+                        "code": c_obj.code,
+                        "date": corr.created_at.strftime("%d %b %Y"),
+                        "time": corr.created_at.strftime("%I:%M %p"),
+                        "status": "Present",
+                        "source": "correction",
+                        "reason": corr.reason,
+                        "challenge": "correction",
+                    })
+            except Exception:
+                pass
+
     missed_count = max(0, total_classes - attended_count)
     percentage = (
         round((attended_count / total_classes) * 100, 1)
@@ -655,19 +737,6 @@ async def get_student_attendance_summary(
         else (100.0 if attended_count > 0 else 0.0)
     )
 
-    records = [
-        {
-            "id": log.id,
-            "subject": course.name,
-            "code": course.code,
-            "date": log.marked_at.strftime("%d %b %Y"),
-            "time": log.marked_at.strftime("%I:%M %p"),
-            "status": "Present",
-            "source": log.source,
-            "challenge": log.challenge or "blink",
-        }
-        for log, session, course in rows
-    ]
 
     return {
         "student": {

@@ -161,3 +161,61 @@ class OverrideAttendanceResponse(BaseModel):
     reason: str
 
 
+# ── Attendance Corrections schemas (Phase 3) ────────────────────────────────
+
+class AttendanceCorrectionRequest(BaseModel):
+    student_id: int = Field(gt=0)
+    status: Literal["present", "absent"]
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class AttendanceCorrectionItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    session_id: int
+    student_id: int
+    faculty_id: int
+    status: Literal["present", "absent"]
+    reason: str
+    created_at: datetime
+
+
+class StudentEffectiveAttendance(BaseModel):
+    student_id: int
+    name: str
+    full_name: str
+    roll_no: str
+    status: Literal["present", "absent"]
+    source: str | None = None  # "scan", "override", "correction", None
+    reason: str | None = None
+    marked_at: datetime | None = None
+    corrected_at: datetime | None = None
+    correction_id: int | None = None
+
+
+class SessionUnifiedAttendanceResponse(BaseModel):
+    session_id: int
+    class_id: int
+    class_name: str
+    class_code: str
+    session_status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    total_students: int
+    present_count: int
+    absent_count: int
+    students: list[StudentEffectiveAttendance] = Field(default_factory=list)
+
+
+class ClassSessionSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    course_id: int
+    started_at: datetime
+    ended_at: datetime | None = None
+    status: str
+    present_count: int = 0
+    total_students: int = 0
+

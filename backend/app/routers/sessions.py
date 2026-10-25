@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_role
 from app.db import get_db
+from app.models.attendance_correction import AttendanceCorrection
 from app.models.attendance_log import AttendanceLog
 from app.models.attendance_session import AttendanceSession
 from app.models.audit import AuditEvent
@@ -24,6 +25,8 @@ from app.models.course import Course
 from app.models.override import Override
 from app.models.user import User
 from app.schemas.attendance import (
+    AttendanceCorrectionItem,
+    AttendanceCorrectionRequest,
     CreateSessionRequest,
     LiveAttendanceResponse,
     MarkedStudentEntry,
@@ -32,7 +35,9 @@ from app.schemas.attendance import (
     OverrideAttendanceResponse,
     QRTokenResponse,
     SessionResponse,
+    SessionUnifiedAttendanceResponse,
 )
+from app.services.attendance_resolution import resolve_session_effective_attendance
 from app.services.qr_service import generate_qr_payload
 
 router = APIRouter(prefix="/sessions", tags=["Sessions"])
@@ -489,4 +494,113 @@ async def _get_owned_session(
         )
 
     return session
+
+
+# ── Attendance Corrections & Unified Attendance (Phase 3) ───────────────────
+
+@router.get("/{session_id}/attendance", response_model=SessionUnifiedAttendanceResponse)
+async def get_session_attendance(
+    session_id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get unified effective attendance for a session.
+    Latest correction wins (present or absent) > AttendanceLog (present) > Absent.
+    """
+    session = await _get_owned_session(session_id, faculty, db)
+    course, session, students = await resolve_session_effective_attendance(
+        db, session.id, faculty.tenant_id
+    )
+    if not course or not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session or course not found",
+        )
+
+    present_count = sum(1 for s in students if s.status == "present")
+    absent_count = max(0, len(students) - present_count)
+
+    return SessionUnifiedAttendanceResponse(
+        session_id=session.id,
+        class_id=course.id,
+        class_name=course.name,
+        class_code=course.code,
+        session_status=session.status,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        total_students=len(students),
+        present_count=present_count,
+        absent_count=absent_count,
+        students=students,
+    )
+
+
+@router.post(
+    "/{session_id}/corrections",
+    response_model=AttendanceCorrectionItem,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_attendance_correction(
+    session_id: int,
+    body: AttendanceCorrectionRequest,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Append an attendance correction (present or absent) for a student in this session.
+    Append-only with mandatory reason and audit log.
+    """
+    session = await _get_owned_session(session_id, faculty, db)
+
+    clean_reason = body.reason.strip()
+    if len(clean_reason) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Correction reason must be at least 3 characters long",
+        )
+
+    student_res = await db.execute(
+        select(User).where(
+            User.id == body.student_id,
+            User.tenant_id == faculty.tenant_id,
+            User.role == "student",
+        )
+    )
+    student = student_res.scalar_one_or_none()
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    correction = AttendanceCorrection(
+        tenant_id=faculty.tenant_id,
+        session_id=session.id,
+        student_id=body.student_id,
+        faculty_id=faculty.id,
+        status=body.status,
+        reason=clean_reason,
+        created_at=now,
+    )
+    db.add(correction)
+
+    audit = AuditEvent(
+        tenant_id=faculty.tenant_id,
+        actor_id=faculty.id,
+        action="attendance_corrected",
+        target=f"session:{session.id}:user:{body.student_id}",
+        meta={
+            "session_id": session.id,
+            "status": body.status,
+            "reason": clean_reason,
+        },
+        created_at=now,
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(correction)
+    return correction
 

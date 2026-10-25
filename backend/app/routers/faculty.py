@@ -12,6 +12,7 @@ from app.core.scope import (
 )
 from app.core.security import hash_password
 from app.db import get_db
+from app.models.attendance_correction import AttendanceCorrection
 from app.models.attendance_session import AttendanceSession
 from app.models.audit import AuditEvent
 from app.models.class_enrollment import ClassEnrollment
@@ -19,7 +20,14 @@ from app.models.course import Course
 from app.models.face_vector import FaceVector
 from app.models.join_request import JoinRequest
 from app.models.user import User
+from app.schemas.attendance import (
+    AttendanceCorrectionItem,
+    AttendanceCorrectionRequest,
+    ClassSessionSummary,
+    SessionUnifiedAttendanceResponse,
+)
 from app.schemas.auth import ResetPasswordRequest, ResetPasswordResponse, UserResponse
+from app.services.attendance_resolution import resolve_session_effective_attendance
 from app.schemas.classes import (
     ClassResponse,
     ClassStudentItem,
@@ -806,3 +814,203 @@ async def in_person_reset_password(
         temporary_password=new_password,
         must_change_password=True,
     )
+
+
+# ── Attendance Corrections & Sessions (Phase 3) ─────────────────────────────
+
+@router.get(
+    "/classes/{id}/sessions",
+    response_model=list[ClassSessionSummary],
+    status_code=status.HTTP_200_OK,
+)
+async def list_class_sessions(
+    id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all attendance sessions for a faculty's class with real-time turnout counts."""
+    course_res = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.tenant_id == faculty.tenant_id,
+            Course.faculty_id == faculty.id,
+        )
+    )
+    course = course_res.scalar_one_or_none()
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Class not found or not authorized",
+        )
+
+    st_count_res = await db.execute(
+        select(func.count(ClassEnrollment.id)).where(
+            ClassEnrollment.course_id == id,
+            ClassEnrollment.tenant_id == faculty.tenant_id,
+            ClassEnrollment.active.is_(True),
+        )
+    )
+    total_students = st_count_res.scalar_one() or 0
+
+    sess_res = await db.execute(
+        select(AttendanceSession).where(
+            AttendanceSession.course_id == id,
+            AttendanceSession.tenant_id == faculty.tenant_id,
+        ).order_by(AttendanceSession.started_at.desc())
+    )
+    sessions = sess_res.scalars().all()
+
+    summaries: list[ClassSessionSummary] = []
+    for s in sessions:
+        _, _, students = await resolve_session_effective_attendance(db, s.id, faculty.tenant_id)
+        present_cnt = sum(1 for st in students if st.status == "present")
+        summaries.append(
+            ClassSessionSummary(
+                id=s.id,
+                course_id=s.course_id,
+                started_at=s.started_at,
+                ended_at=s.ended_at,
+                status=s.status,
+                present_count=present_cnt,
+                total_students=len(students) if students else total_students,
+            )
+        )
+    return summaries
+
+
+@router.get(
+    "/sessions/{session_id}/attendance",
+    response_model=SessionUnifiedAttendanceResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_session_unified_attendance(
+    session_id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get unified effective attendance for a session.
+    Resolution rule:
+      Latest correction wins (present or absent) > AttendanceLog (present) > Absent.
+    """
+    sess_res = await db.execute(
+        select(AttendanceSession).where(
+            AttendanceSession.id == session_id,
+            AttendanceSession.tenant_id == faculty.tenant_id,
+            AttendanceSession.faculty_id == faculty.id,
+        )
+    )
+    session = sess_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found or not authorized",
+        )
+
+    course, session, students = await resolve_session_effective_attendance(
+        db, session_id, faculty.tenant_id
+    )
+    if not session or not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session or course not found",
+        )
+
+    present_count = sum(1 for s in students if s.status == "present")
+    absent_count = max(0, len(students) - present_count)
+
+    return SessionUnifiedAttendanceResponse(
+        session_id=session.id,
+        class_id=course.id,
+        class_name=course.name,
+        class_code=course.code,
+        session_status=session.status,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        total_students=len(students),
+        present_count=present_count,
+        absent_count=absent_count,
+        students=students,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/corrections",
+    response_model=AttendanceCorrectionItem,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_attendance_correction(
+    session_id: int,
+    body: AttendanceCorrectionRequest,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Correct a session's attendance (present or absent).
+    Appends an AttendanceCorrection row (append-only) and logs an audit event.
+    """
+    sess_res = await db.execute(
+        select(AttendanceSession).where(
+            AttendanceSession.id == session_id,
+            AttendanceSession.tenant_id == faculty.tenant_id,
+            AttendanceSession.faculty_id == faculty.id,
+        )
+    )
+    session = sess_res.scalar_one_or_none()
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found or not authorized",
+        )
+
+    clean_reason = body.reason.strip()
+    if len(clean_reason) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Correction reason must be at least 3 characters long",
+        )
+
+    student_res = await db.execute(
+        select(User).where(
+            User.id == body.student_id,
+            User.tenant_id == faculty.tenant_id,
+            User.role == "student",
+        )
+    )
+    student = student_res.scalar_one_or_none()
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    correction = AttendanceCorrection(
+        tenant_id=faculty.tenant_id,
+        session_id=session.id,
+        student_id=body.student_id,
+        faculty_id=faculty.id,
+        status=body.status,
+        reason=clean_reason,
+        created_at=now,
+    )
+    db.add(correction)
+
+    audit = AuditEvent(
+        tenant_id=faculty.tenant_id,
+        actor_id=faculty.id,
+        action="attendance_corrected",
+        target=f"session:{session.id}:user:{body.student_id}",
+        meta={
+            "session_id": session.id,
+            "status": body.status,
+            "reason": clean_reason,
+        },
+        created_at=now,
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(correction)
+    return correction
+

@@ -97,6 +97,106 @@ function FacultyDashboard() {
     }
   }
 
+  // ── Sessions & Attendance Corrections state (Phase 3) ───────────────────
+  const [sessionsModalCourse, setSessionsModalCourse] = useState(null);
+  const [courseSessions, setCourseSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState('');
+
+  const [selectedSessionAttendance, setSelectedSessionAttendance] = useState(null);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [attendanceError, setAttendanceError] = useState('');
+  const [attendanceSearch, setAttendanceSearch] = useState('');
+  const [attendanceFilter, setAttendanceFilter] = useState('all');
+
+  const [correctionTarget, setCorrectionTarget] = useState(null);
+  const [correctionStatus, setCorrectionStatus] = useState('present');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [correctionSubmitting, setCorrectionSubmitting] = useState(false);
+  const [correctionError, setCorrectionError] = useState('');
+  const [correctionSuccess, setCorrectionSuccess] = useState('');
+
+  async function openSessionsModal(course) {
+    setSessionsModalCourse(course);
+    setSelectedSessionAttendance(null);
+    setSessionsLoading(true);
+    setSessionsError('');
+    try {
+      const data = await apiRequest(`/faculty/classes/${course.id}/sessions`);
+      setCourseSessions(data || []);
+    } catch (err) {
+      setSessionsError(err.message || 'Failed to load class sessions.');
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  async function openSessionAttendance(sessionId) {
+    setAttendanceLoading(true);
+    setAttendanceError('');
+    setAttendanceSearch('');
+    setAttendanceFilter('all');
+    try {
+      const data = await apiRequest(`/faculty/sessions/${sessionId}/attendance`);
+      setSelectedSessionAttendance(data);
+    } catch (err) {
+      setAttendanceError(err.message || 'Failed to load session attendance.');
+    } finally {
+      setAttendanceLoading(false);
+    }
+  }
+
+  function openCorrectionModal(student) {
+    setCorrectionTarget(student);
+    setCorrectionStatus(student.status === 'present' ? 'absent' : 'present');
+    setCorrectionReason('');
+    setCorrectionError('');
+    setCorrectionSuccess('');
+  }
+
+  async function handleConfirmCorrection(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!correctionTarget || !selectedSessionAttendance) return;
+    const cleanReason = correctionReason.trim();
+    if (cleanReason.length < 3) {
+      setCorrectionError('Reason must be at least 3 characters long.');
+      return;
+    }
+    setCorrectionSubmitting(true);
+    setCorrectionError('');
+    try {
+      await apiRequest(`/faculty/sessions/${selectedSessionAttendance.session_id}/corrections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_id: correctionTarget.student_id,
+          status: correctionStatus,
+          reason: cleanReason,
+        }),
+      });
+
+      setCorrectionSuccess(`Attendance successfully corrected to ${correctionStatus.toUpperCase()}!`);
+
+      const freshAttendance = await apiRequest(`/faculty/sessions/${selectedSessionAttendance.session_id}/attendance`);
+      setSelectedSessionAttendance(freshAttendance);
+
+      if (sessionsModalCourse) {
+        const freshSessions = await apiRequest(`/faculty/classes/${sessionsModalCourse.id}/sessions`);
+        setCourseSessions(freshSessions || []);
+      }
+
+      setTimeout(() => {
+        setCorrectionTarget(null);
+        setCorrectionSuccess('');
+      }, 700);
+    } catch (err) {
+      setCorrectionError(err.message || 'Failed to save correction.');
+    } finally {
+      setCorrectionSubmitting(false);
+    }
+  }
+
+
   const qrPollTimerRef = useRef(null);
   const livePollTimerRef = useRef(null);
 
@@ -1183,6 +1283,23 @@ function FacultyDashboard() {
 
                       <button
                         type="button"
+                        onClick={() => openSessionsModal(c)}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(168, 85, 247, 0.15)',
+                          border: '1px solid rgba(168, 85, 247, 0.35)',
+                          color: '#c084fc',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        🕒 Sessions & Corrections
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => {
                           setSelectedClassId(String(c.id));
                           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1542,6 +1659,558 @@ function FacultyDashboard() {
                   {removeSubmitting ? 'Removing...' : 'Confirm Removal'}
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Modal: Class Sessions & Attendance History (Phase 3) ──────── */}
+        {sessionsModalCourse && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.75)',
+              backdropFilter: 'blur(5px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                background: '#0f172a',
+                border: '1px solid rgba(168, 85, 247, 0.35)',
+                borderRadius: '16px',
+                padding: '24px',
+                maxWidth: '960px',
+                width: '100%',
+                maxHeight: '88vh',
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+                color: '#ffffff',
+              }}
+            >
+              {/* Modal Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '20px' }}>🕒</span>
+                    <h3 style={{ margin: 0, fontSize: '19px', color: '#c084fc', fontWeight: 700 }}>
+                      {selectedSessionAttendance
+                        ? `Session #${selectedSessionAttendance.session_id} Attendance Roster`
+                        : `Class Sessions — ${sessionsModalCourse.name} (${sessionsModalCourse.code})`}
+                    </h3>
+                  </div>
+                  <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '13px' }}>
+                    {selectedSessionAttendance
+                      ? `Conducted on ${new Date(selectedSessionAttendance.started_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} • Unified effective attendance`
+                      : 'View previous lecture sessions, check unified attendance turnout, and correct attendance.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSessionsModalCourse(null);
+                    setSelectedSessionAttendance(null);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    fontSize: '20px',
+                    cursor: 'pointer',
+                    padding: '4px 8px',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Sub-header / Back Navigation when inspecting a session */}
+              {selectedSessionAttendance ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', flex: 1, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSessionAttendance(null)}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(148, 163, 184, 0.3)',
+                        background: 'rgba(30, 41, 59, 0.6)',
+                        color: '#cbd5e1',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      ← Back to Sessions List
+                    </button>
+
+                    {/* Stat Badges */}
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                      <span style={{ padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600, background: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                        ✓ Present: {selectedSessionAttendance.present_count}
+                      </span>
+                      <span style={{ padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600, background: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                        ✗ Absent: {selectedSessionAttendance.absent_count}
+                      </span>
+                      <span style={{ padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600, background: 'rgba(103, 232, 249, 0.15)', color: '#67e8f9', border: '1px solid rgba(103, 232, 249, 0.3)' }}>
+                        👥 Total: {selectedSessionAttendance.total_students}
+                      </span>
+                      <span style={{ padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700, background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.4)' }}>
+                        Turnout: {selectedSessionAttendance.total_students > 0 ? Math.round((selectedSessionAttendance.present_count / selectedSessionAttendance.total_students) * 100) : 0}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Filter & Search Bar */}
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      placeholder="Search by student name or roll no..."
+                      value={attendanceSearch}
+                      onChange={(e) => setAttendanceSearch(e.target.value)}
+                      style={{
+                        flex: 1,
+                        minWidth: '220px',
+                        padding: '8px 12px',
+                        background: 'rgba(15, 23, 42, 0.8)',
+                        border: '1px solid rgba(148, 163, 184, 0.3)',
+                        borderRadius: '6px',
+                        color: '#f8fafc',
+                        fontSize: '13px',
+                        outline: 'none',
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {['all', 'present', 'absent'].map((f) => (
+                        <button
+                          key={f}
+                          type="button"
+                          onClick={() => setAttendanceFilter(f)}
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            borderRadius: '6px',
+                            border: attendanceFilter === f ? '1px solid #c084fc' : '1px solid rgba(148, 163, 184, 0.2)',
+                            background: attendanceFilter === f ? 'rgba(168, 85, 247, 0.25)' : 'rgba(30, 41, 59, 0.4)',
+                            color: attendanceFilter === f ? '#f3e8ff' : '#94a3b8',
+                            cursor: 'pointer',
+                            textTransform: 'capitalize',
+                          }}
+                        >
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Student Unified Attendance Table */}
+                  <div style={{ flex: 1, overflowY: 'auto', border: '1px solid rgba(148, 163, 184, 0.15)', borderRadius: '8px', background: 'rgba(15, 23, 42, 0.4)' }}>
+                    {attendanceLoading ? (
+                      <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>Loading session roster...</div>
+                    ) : (
+                      (() => {
+                        const filtered = (selectedSessionAttendance.students || []).filter((s) => {
+                          const matchesFilter =
+                            attendanceFilter === 'all' || s.status.toLowerCase() === attendanceFilter;
+                          const q = attendanceSearch.toLowerCase().trim();
+                          const matchesSearch =
+                            !q ||
+                            (s.name && s.name.toLowerCase().includes(q)) ||
+                            (s.roll_no && s.roll_no.toLowerCase().includes(q));
+                          return matchesFilter && matchesSearch;
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <div style={{ padding: '36px', textAlign: 'center', color: '#64748b', fontSize: '14px' }}>
+                              No students match the current filter.
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+                            <thead>
+                              <tr style={{ borderBottom: '1px solid rgba(148, 163, 184, 0.2)', background: 'rgba(30, 41, 59, 0.6)', color: '#94a3b8' }}>
+                                <th style={{ padding: '10px 14px' }}>Roll No</th>
+                                <th style={{ padding: '10px 14px' }}>Student Name</th>
+                                <th style={{ padding: '10px 14px' }}>Effective Status</th>
+                                <th style={{ padding: '10px 14px' }}>Source</th>
+                                <th style={{ padding: '10px 14px' }}>Reason / Audit Note</th>
+                                <th style={{ padding: '10px 14px', textAlign: 'right' }}>Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filtered.map((st) => {
+                                const isPresent = st.status === 'present';
+                                return (
+                                  <tr key={st.student_id} style={{ borderBottom: '1px solid rgba(148, 163, 184, 0.1)' }}>
+                                    <td style={{ padding: '10px 14px', fontWeight: 600, color: '#f8fafc' }}>
+                                      {st.roll_no}
+                                    </td>
+                                    <td style={{ padding: '10px 14px', color: '#e2e8f0' }}>
+                                      {st.full_name || st.name}
+                                    </td>
+                                    <td style={{ padding: '10px 14px' }}>
+                                      <span
+                                        style={{
+                                          padding: '3px 8px',
+                                          borderRadius: '6px',
+                                          fontSize: '11px',
+                                          fontWeight: 700,
+                                          textTransform: 'uppercase',
+                                          background: isPresent ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                          color: isPresent ? '#6ee7b7' : '#fca5a5',
+                                          border: isPresent ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)',
+                                        }}
+                                      >
+                                        {isPresent ? '✓ Present' : '✗ Absent'}
+                                      </span>
+                                    </td>
+                                    <td style={{ padding: '10px 14px' }}>
+                                      <span
+                                        style={{
+                                          fontSize: '11px',
+                                          color: st.source === 'correction' ? '#c084fc' : st.source === 'override' ? '#f59e0b' : '#38bdf8',
+                                        }}
+                                      >
+                                        {st.source === 'correction'
+                                          ? '✏️ Correction'
+                                          : st.source === 'override'
+                                          ? '📋 Override'
+                                          : st.source === 'scan'
+                                          ? '📱 QR Scan'
+                                          : '—'}
+                                      </span>
+                                    </td>
+                                    <td style={{ padding: '10px 14px', color: '#94a3b8', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={st.reason || ''}>
+                                      {st.reason || '—'}
+                                    </td>
+                                    <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => openCorrectionModal(st)}
+                                        style={{
+                                          padding: '4px 10px',
+                                          fontSize: '11px',
+                                          fontWeight: 600,
+                                          borderRadius: '5px',
+                                          border: '1px solid rgba(192, 132, 252, 0.4)',
+                                          background: 'rgba(168, 85, 247, 0.15)',
+                                          color: '#c084fc',
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        ✏️ Correct
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        );
+                      })()
+                    )}
+                  </div>
+                </div>
+              ) : (
+                /* Session List View */
+                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {sessionsLoading ? (
+                    <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8' }}>Loading sessions...</div>
+                  ) : sessionsError ? (
+                    <div style={{ padding: '16px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
+                      {sessionsError}
+                    </div>
+                  ) : courseSessions.length === 0 ? (
+                    <div style={{ padding: '50px 20px', textAlign: 'center', color: '#64748b' }}>
+                      <div style={{ fontSize: '36px', marginBottom: '10px' }}>⏳</div>
+                      <div style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0' }}>No sessions found</div>
+                      <div style={{ fontSize: '13px', marginTop: '4px' }}>
+                        No attendance sessions have been conducted for this class yet. Start a session from the dashboard.
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {courseSessions.map((s) => {
+                        const started = new Date(s.started_at);
+                        const ended = s.ended_at ? new Date(s.ended_at) : null;
+                        const turnoutPct = s.total_students > 0 ? Math.round((s.present_count / s.total_students) * 100) : 0;
+                        const isActive = s.status === 'active';
+
+                        return (
+                          <div
+                            key={s.id}
+                            style={{
+                              background: 'rgba(30, 41, 59, 0.5)',
+                              border: isActive ? '1px solid rgba(74, 222, 128, 0.4)' : '1px solid rgba(148, 163, 184, 0.2)',
+                              borderRadius: '10px',
+                              padding: '16px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '12px',
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span style={{ fontSize: '15px', fontWeight: 700, color: '#f8fafc' }}>
+                                  Session #{s.id}
+                                </span>
+                                <span
+                                  style={{
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    padding: '2px 8px',
+                                    borderRadius: '12px',
+                                    background: isActive ? 'rgba(74, 222, 128, 0.2)' : 'rgba(148, 163, 184, 0.2)',
+                                    color: isActive ? '#4ade80' : '#94a3b8',
+                                    border: isActive ? '1px solid rgba(74, 222, 128, 0.4)' : '1px solid rgba(148, 163, 184, 0.3)',
+                                  }}
+                                >
+                                  {isActive ? '● Live Active' : 'Finished'}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '4px' }}>
+                                {started.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' })} at{' '}
+                                {started.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {ended ? ` → ${ended.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '14px', fontWeight: 700, color: '#67e8f9' }}>
+                                  {s.present_count} / {s.total_students} Present
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                                  {turnoutPct}% turnout
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => openSessionAttendance(s.id)}
+                                style={{
+                                  padding: '8px 16px',
+                                  background: 'linear-gradient(135deg, #a855f7, #7e22ce)',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  boxShadow: '0 2px 8px rgba(168, 85, 247, 0.3)',
+                                }}
+                              >
+                                👁️ View & Correct Attendance →
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Modal: Correct Attendance (Phase 3) ────────────────────────── */}
+        {correctionTarget && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.8)',
+              backdropFilter: 'blur(5px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1100,
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                background: '#0f172a',
+                border: '1px solid rgba(192, 132, 252, 0.4)',
+                borderRadius: '16px',
+                padding: '24px',
+                maxWidth: '520px',
+                width: '100%',
+                boxShadow: '0 25px 50px rgba(0, 0, 0, 0.8)',
+                color: '#ffffff',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                <span style={{ fontSize: '24px' }}>✏️</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', color: '#c084fc', fontWeight: 700 }}>
+                    Correct Attendance
+                  </h3>
+                  <p style={{ margin: '2px 0 0', color: '#94a3b8', fontSize: '13px' }}>
+                    Student: <strong style={{ color: '#f8fafc' }}>{correctionTarget.full_name || correctionTarget.name}</strong> ({correctionTarget.roll_no})
+                  </p>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(30, 41, 59, 0.5)',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(148, 163, 184, 0.15)',
+                  fontSize: '12px',
+                  color: '#94a3b8',
+                  marginBottom: '16px',
+                }}
+              >
+                Current effective status: <strong style={{ color: correctionTarget.status === 'present' ? '#6ee7b7' : '#fca5a5' }}>{correctionTarget.status.toUpperCase()}</strong>
+                {correctionTarget.reason && ` (Note: ${correctionTarget.reason})`}
+              </div>
+
+              {correctionError && (
+                <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: '6px', color: '#fca5a5', fontSize: '12px' }}>
+                  {correctionError}
+                </div>
+              )}
+
+              {correctionSuccess && (
+                <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(16, 185, 129, 0.15)', border: '1px solid #10b981', borderRadius: '6px', color: '#6ee7b7', fontSize: '12px' }}>
+                  {correctionSuccess}
+                </div>
+              )}
+
+              <form onSubmit={handleConfirmCorrection}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>
+                    New Attendance Status:
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionStatus('present')}
+                      style={{
+                        flex: 1,
+                        padding: '10px',
+                        borderRadius: '8px',
+                        border: correctionStatus === 'present' ? '2px solid #10b981' : '1px solid rgba(148, 163, 184, 0.3)',
+                        background: correctionStatus === 'present' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(30, 41, 59, 0.5)',
+                        color: correctionStatus === 'present' ? '#6ee7b7' : '#94a3b8',
+                        fontWeight: 700,
+                        fontSize: '13px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      ✓ Mark Present
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionStatus('absent')}
+                      style={{
+                        flex: 1,
+                        padding: '10px',
+                        borderRadius: '8px',
+                        border: correctionStatus === 'absent' ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.3)',
+                        background: correctionStatus === 'absent' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(30, 41, 59, 0.5)',
+                        color: correctionStatus === 'absent' ? '#fca5a5' : '#94a3b8',
+                        fontWeight: 700,
+                        fontSize: '13px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      ✗ Mark Absent
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '18px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#e2e8f0', marginBottom: '6px' }}>
+                    Reason for Correction <span style={{ color: '#f87171' }}>*</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="e.g. Valid medical leave approved, official hackathon duty certificate, or student left room early"
+                    value={correctionReason}
+                    onChange={(e) => setCorrectionReason(e.target.value)}
+                    required
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      background: 'rgba(15, 23, 42, 0.8)',
+                      border: '1px solid rgba(148, 163, 184, 0.3)',
+                      borderRadius: '8px',
+                      color: '#ffffff',
+                      fontSize: '13px',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                    Minimum 3 characters required. Stored in append-only audit trail.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                  <button
+                    type="button"
+                    disabled={correctionSubmitting}
+                    onClick={() => {
+                      setCorrectionTarget(null);
+                      setCorrectionError('');
+                      setCorrectionSuccess('');
+                    }}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      background: 'transparent',
+                      color: '#cbd5e1',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={correctionSubmitting || correctionReason.trim().length < 3}
+                    style={{
+                      padding: '8px 18px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: 'linear-gradient(135deg, #a855f7, #7e22ce)',
+                      color: '#ffffff',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: correctionSubmitting || correctionReason.trim().length < 3 ? 'not-allowed' : 'pointer',
+                      opacity: correctionSubmitting || correctionReason.trim().length < 3 ? 0.6 : 1,
+                      boxShadow: '0 2px 10px rgba(168, 85, 247, 0.4)',
+                    }}
+                  >
+                    {correctionSubmitting ? 'Saving...' : 'Save Correction'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
