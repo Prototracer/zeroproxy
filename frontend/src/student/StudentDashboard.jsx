@@ -308,31 +308,25 @@ function StudentDashboard() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <button
-            type="button"
-            onClick={() => navigate("/student/enroll")}
-            style={{
-              padding: "11px 20px",
-              borderRadius: "10px",
-              border: "1px solid rgba(38, 207, 255, 0.4)",
-              background:
-                studentInfo.has_face_enrollment && studentInfo.status === "active"
-                  ? "rgba(38, 207, 255, 0.12)"
-                  : "linear-gradient(135deg, #0284c7, #2563eb)",
-              color: "#ffffff",
-              fontWeight: 600,
-              fontSize: "14px",
-              cursor: "pointer",
-              boxShadow:
-                studentInfo.has_face_enrollment && studentInfo.status === "active"
-                  ? "none"
-                  : "0 4px 14px rgba(37, 99, 255, 0.4)",
-            }}
-          >
-            {studentInfo.has_face_enrollment && studentInfo.status === "active"
-              ? "👤 Re-enroll Face"
-              : "👤 Enroll Face"}
-          </button>
+          {(!studentInfo.has_face_enrollment || studentInfo.status !== "active") && (
+            <button
+              type="button"
+              onClick={() => navigate("/student/enroll")}
+              style={{
+                padding: "11px 20px",
+                borderRadius: "10px",
+                border: "1px solid rgba(38, 207, 255, 0.4)",
+                background: "linear-gradient(135deg, #0284c7, #2563eb)",
+                color: "#ffffff",
+                fontWeight: 600,
+                fontSize: "14px",
+                cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(37, 99, 255, 0.4)",
+              }}
+            >
+              👤 Enroll Face
+            </button>
+          )}
 
           <button
             type="button"

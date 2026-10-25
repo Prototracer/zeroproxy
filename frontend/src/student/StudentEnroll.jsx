@@ -37,7 +37,6 @@ export default function StudentEnroll() {
   // Biometric samples (3 required)
   const [capturedSamples, setCapturedSamples] = useState([]);
   const [captureFeedback, setCaptureFeedback] = useState(null);
-  const [captureMode, setCaptureMode] = useState('camera'); // 'camera' or 'upload'
   const [consentGiven, setConsentGiven] = useState(true);
 
   useEffect(() => {
@@ -217,46 +216,6 @@ export default function StudentEnroll() {
     });
   }
 
-  // ── Biometric Extraction from Uploaded Photo Fallback ─────────────────────
-  async function handleImageUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!areModelsLoaded()) {
-      await initModels();
-    }
-
-    setCaptureFeedback({ type: 'info', text: `Processing photo ${file.name}...` });
-
-    try {
-      const img = await faceapi.bufferToImage(file);
-      const detection = await faceapi
-        .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (!detection) {
-        setCaptureFeedback({
-          type: 'error',
-          text: 'No face detected in the photo. Please choose a clear, front-facing portrait with good lighting.',
-        });
-        return;
-      }
-
-      const descriptor = Array.from(detection.descriptor);
-      setCapturedSamples((prev) => {
-        const next = [...prev, descriptor];
-        setCaptureFeedback({
-          type: 'success',
-          text: `✓ Sample #${next.length} extracted from photo!`,
-        });
-        return next;
-      });
-    } catch (err) {
-      setCaptureFeedback({ type: 'error', text: `Error processing photo: ${err.message}` });
-    }
-  }
-
   // ── Complete Face Enrollment ──────────────────────────────────────────────
   async function handleCompleteEnrollment() {
     if (capturedSamples.length === 0) {
@@ -296,7 +255,14 @@ export default function StudentEnroll() {
         has_face_enrollment: true,
       }));
     } catch (err) {
-      setErrorMessage(err?.message || 'Face enrollment failed. Please check your connection or face samples.');
+      const raw = err?.message || '';
+      if (raw.includes('duplicate_face') || raw.toLowerCase().includes('duplicate')) {
+        setErrorMessage('Face biometric could not be registered. Please contact administration for assistance.');
+      } else if (raw.toLowerCase().includes('already active') || raw.toLowerCase().includes('already enrolled')) {
+        setErrorMessage('Face biometric is already enrolled and active. Re-enrollment requires a faculty or admin reset.');
+      } else {
+        setErrorMessage(raw || 'Face enrollment failed. Please check your connection or face samples.');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -505,7 +471,7 @@ export default function StudentEnroll() {
               </div>
 
               <div>
-                {studentInfo.has_face_enrollment ? (
+                {studentInfo.has_face_enrollment && studentInfo.status === 'active' ? (
                   <span
                     style={{
                       background: 'rgba(74, 222, 128, 0.15)',
@@ -517,7 +483,7 @@ export default function StudentEnroll() {
                       fontWeight: 600,
                     }}
                   >
-                    ● Currently Enrolled (Re-enroll available)
+                    ● Face Enrollment Verified & Active
                   </span>
                 ) : (
                   <span
@@ -555,28 +521,57 @@ export default function StudentEnroll() {
             )}
 
             {/* AI Model Progress Bar if not loaded */}
-            {!areModelsLoaded() && (
-              <div style={{ ...cardStyle, marginBottom: '22px', padding: '16px 20px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '8px' }}>
-                  <span style={{ color: '#67e8f9' }}>{modelStatus}</span>
-                  <span style={{ color: '#94a3b8' }}>{modelProgress}%</span>
-                </div>
-                <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      width: `${modelProgress}%`,
-                      height: '100%',
-                      background: 'linear-gradient(90deg, #06b6d4, #3b82f6)',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
+            {studentInfo.has_face_enrollment && studentInfo.status === 'active' ? (
+              <div style={{ ...cardStyle, textAlign: 'center', padding: '44px 24px' }}>
+                <div style={{ fontSize: '46px', marginBottom: '14px' }}>🔒</div>
+                <h3 style={{ fontSize: '22px', margin: '0 0 10px', color: '#f1f5f9', fontWeight: 700 }}>
+                  Face Biometric Already Registered & Active
+                </h3>
+                <p style={{ color: '#94a3b8', fontSize: '14px', maxWidth: '520px', margin: '0 auto 24px', lineHeight: 1.6 }}>
+                  Your face biometric descriptor has already been verified and encrypted. Per ZeroProxy protocol (Handbook §1), self-service re-enrollment is not permitted. Re-enrollment can only take place after a faculty or administrator reset.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/student')}
+                  style={{
+                    padding: '12px 26px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 14px rgba(37, 99, 255, 0.4)',
+                  }}
+                >
+                  ← Return to Student Dashboard
+                </button>
               </div>
-            )}
+            ) : (
+              <div>
+                {!areModelsLoaded() && (
+                  <div style={{ ...cardStyle, marginBottom: '22px', padding: '16px 20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '8px' }}>
+                      <span style={{ color: '#67e8f9' }}>{modelStatus}</span>
+                      <span style={{ color: '#94a3b8' }}>{modelProgress}%</span>
+                    </div>
+                    <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${modelProgress}%`,
+                          height: '100%',
+                          background: 'linear-gradient(90deg, #06b6d4, #3b82f6)',
+                          transition: 'width 0.3s ease',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
 
             {/* Camera / Capture Section */}
             <div style={cardStyle}>
-              {/* Capture Mode Toggle */}
+              {/* Camera Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', flexWrap: 'wrap', gap: '10px' }}>
                 <div>
                   <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
@@ -586,52 +581,10 @@ export default function StudentEnroll() {
                     Capture 3 clear biometric samples looking straight at the camera.
                   </p>
                 </div>
-
-                <div style={{ display: 'flex', gap: '6px', background: 'rgba(2, 6, 23, 0.5)', padding: '4px', borderRadius: '10px' }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCaptureMode('camera');
-                      if (!cameraActive) startCamera();
-                    }}
-                    style={{
-                      padding: '7px 14px',
-                      borderRadius: '8px',
-                      border: 'none',
-                      background: captureMode === 'camera' ? 'rgba(38, 207, 255, 0.2)' : 'transparent',
-                      color: captureMode === 'camera' ? '#26cfff' : '#94a3b8',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    📹 Webcam
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCaptureMode('upload');
-                      stopCamera();
-                    }}
-                    style={{
-                      padding: '7px 14px',
-                      borderRadius: '8px',
-                      border: 'none',
-                      background: captureMode === 'upload' ? 'rgba(38, 207, 255, 0.2)' : 'transparent',
-                      color: captureMode === 'upload' ? '#26cfff' : '#94a3b8',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    📁 Photo Upload Fallback
-                  </button>
-                </div>
               </div>
 
-              {captureMode === 'camera' ? (
-                <div>
-                  {/* Video Viewport */}
+              <div>
+                {/* Video Viewport */}
                   <div
                     style={{
                       position: 'relative',
@@ -762,45 +715,6 @@ export default function StudentEnroll() {
                     </div>
                   )}
                 </div>
-              ) : (
-                /* Fallback Photo Upload */
-                <div
-                  style={{
-                    padding: '30px',
-                    border: '2px dashed rgba(113, 168, 255, 0.3)',
-                    borderRadius: '14px',
-                    textAlign: 'center',
-                    marginBottom: '18px',
-                    background: 'rgba(2, 6, 23, 0.4)',
-                  }}
-                >
-                  <div style={{ fontSize: '38px', marginBottom: '12px' }}>🖼️</div>
-                  <h4 style={{ margin: '0 0 6px', fontSize: '15px' }}>Upload Front-Facing Portrait</h4>
-                  <p style={{ margin: '0 0 16px', color: '#94a3b8', fontSize: '13px' }}>
-                    Choose a clear JPEG or PNG photo with good lighting and neutral expression.
-                  </p>
-                  <label
-                    style={{
-                      display: 'inline-block',
-                      padding: '11px 22px',
-                      borderRadius: '10px',
-                      background: 'linear-gradient(135deg, #06b6d4, #3b82f6)',
-                      color: '#ffffff',
-                      fontWeight: 600,
-                      fontSize: '14px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Select Photo File
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      style={{ display: 'none' }}
-                    />
-                  </label>
-                </div>
-              )}
 
               {/* Feedback Alert */}
               {captureFeedback && (
@@ -949,6 +863,8 @@ export default function StudentEnroll() {
                 </button>
               </div>
             </div>
+            </div>
+            )}
           </div>
         )}
       </div>
