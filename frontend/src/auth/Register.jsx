@@ -50,8 +50,35 @@ function Register() {
         }),
       });
 
+      // Auto-login to seamlessly transition to Face Enrollment
+      try {
+        const loginRes = await apiRequest('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: email.trim(),
+            password,
+          }),
+        });
+
+        const token = loginRes?.token || loginRes?.accessToken || loginRes?.access_token;
+        if (token) {
+          sessionStorage.setItem('token', token);
+          sessionStorage.setItem('isLoggedIn', 'true');
+          sessionStorage.setItem('role', 'student');
+
+          setSuccess(true);
+          setMessage('Registration successful! Redirecting to Face Enrollment to complete your profile...');
+          setTimeout(() => {
+            navigate('/student/enroll');
+          }, 1000);
+          return;
+        }
+      } catch {
+        // Fallback to manual login navigation if auto-login fails
+      }
+
       setSuccess(true);
-      setMessage('Registration successful! You can now log in.');
+      setMessage('Registration successful! You can now log in to complete your face enrollment.');
       setName('');
       setEmail('');
       setPassword('');
@@ -59,6 +86,9 @@ function Register() {
       setRole('student');
       setShowPassword(false);
       setShowConfirmPassword(false);
+      setTimeout(() => {
+        navigate('/login');
+      }, 1500);
     } catch (error) {
       setMessage(error?.message || 'Registration failed. Please try again.');
     } finally {

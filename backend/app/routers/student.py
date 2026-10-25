@@ -9,10 +9,19 @@ from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
 from app.models.join_request import JoinRequest
 from app.models.user import User
+from app.schemas.auth import UserResponse
+from app.schemas.face_enrollment import FaceEnrollmentRequest
 from app.schemas.join_request import (
     CreateJoinRequest,
     JoinRequestMessageResponse,
     StudentJoinRequestItem,
+)
+from app.services.face_enrollment_service import (
+    DuplicateFaceError,
+    EnrollmentDataError,
+    EnrollmentServiceError,
+    EnrollmentStudentNotFound,
+    enroll_student,
 )
 
 router = APIRouter(prefix="/student", tags=["Student"])
@@ -349,4 +358,57 @@ async def list_available_instructors(
             })
 
     return list(faculty_map.values())
+
+
+# ── Student Face Self-Enrollment ──────────────────────────────────────────
+
+@router.post(
+    "/enroll",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+@router.post(
+    "/face/enroll",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def enroll_student_face_self(
+    body: FaceEnrollmentRequest,
+    student: User = Depends(require_role("student")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate consent, encrypt biometrics, store FaceVector, and activate student account."""
+    try:
+        await enroll_student(
+            db,
+            faculty=None,
+            student=student,
+            student_id=student.id,
+            descriptors=body.descriptors,
+            consent=body.consent,
+        )
+    except EnrollmentStudentNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except DuplicateFaceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="duplicate_face",
+        ) from exc
+    except (EnrollmentDataError, EnrollmentServiceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    # Return the activated student
+    result = await db.execute(
+        select(User).where(
+            User.id == student.id,
+            User.tenant_id == student.tenant_id,
+        )
+    )
+    return result.scalar_one()
 

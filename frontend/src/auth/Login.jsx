@@ -300,7 +300,7 @@ function Login() {
 
             <p style={{ fontSize: '13px', color: '#9eb3d9', margin: 0 }}>
               {activeTab === 'faculty'
-                ? 'Sign in to create sessions, display rotating QR, & enroll students'
+                ? 'Sign in to create sessions, display rotating QR, & manage attendance'
                 : 'Sign in to track verified attendance & scan lecture QR codes'}
             </p>
           </div>

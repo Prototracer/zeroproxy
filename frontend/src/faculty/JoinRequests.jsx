@@ -233,24 +233,7 @@ export default function JoinRequests() {
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button
-            type="button"
-            onClick={() => navigate('/faculty/enroll')}
-            style={{
-              padding: '10px 18px',
-              borderRadius: '10px',
-              border: 'none',
-              background: 'linear-gradient(135deg, #06b6d4, #3b82f6)',
-              color: '#ffffff',
-              fontWeight: 600,
-              fontSize: '13px',
-              cursor: 'pointer',
-            }}
-          >
-            Face Enrollment →
-          </button>
-        </div>
+
       </header>
 
       {/* Notifications */}

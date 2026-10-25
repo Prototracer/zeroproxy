@@ -417,23 +417,7 @@ function FacultyDashboard() {
               )}
             </button>
 
-            <button
-              type="button"
-              onClick={() => navigate('/faculty/enroll')}
-              style={{
-                padding: '10px 18px',
-                background: 'linear-gradient(135deg, #0284c7, #2563eb)',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: '8px',
-                fontWeight: 600,
-                fontSize: '14px',
-                cursor: 'pointer',
-                boxShadow: '0 4px 14px rgba(37, 99, 255, 0.3)',
-              }}
-            >
-              👤 Face Enrollment
-            </button>
+
 
             <button
               type="button"

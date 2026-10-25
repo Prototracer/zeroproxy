@@ -39,19 +39,36 @@ class EnrollmentDataError(EnrollmentServiceError):
 async def enroll_student(
     db: AsyncSession,
     *,
-    faculty: User,
-    student_id: int,
+    faculty: User | None = None,
+    student: User | None = None,
+    student_id: int | None = None,
     descriptors: list[list[float]],
     consent: bool,
 ) -> FaceVector:
     """Validate, encrypt and store a student's face enrollment.
 
-    The caller must authenticate the faculty member and require the
-    faculty role. This function commits the enrollment transaction.
+    Supports both faculty-supervised enrollment and student self-enrollment.
+    This function commits the enrollment transaction and activates the student.
     """
 
-    if faculty.role != "faculty":
-        raise EnrollmentServiceError("Faculty authorization required")
+    if faculty is not None:
+        if faculty.role != "faculty":
+            raise EnrollmentServiceError("Faculty authorization required")
+        target_student_id = student_id
+        approver_id = faculty.id
+        tenant_id = faculty.tenant_id
+    elif student is not None:
+        if student.role != "student":
+            raise EnrollmentServiceError("Student authorization required")
+        target_student_id = student.id
+        approver_id = student.id
+        tenant_id = student.tenant_id
+    elif student_id is not None:
+        target_student_id = student_id
+        approver_id = student_id
+        tenant_id = 1
+    else:
+        raise EnrollmentServiceError("Target student not specified")
 
     if consent is not True:
         raise EnrollmentDataError("Consent is required for enrollment")
@@ -61,11 +78,11 @@ async def enroll_student(
     except (EnrollmentValidationError, TypeError) as exc:
         raise EnrollmentDataError(str(exc)) from exc
 
-    # Find the student within the faculty member's tenant.
+    # Find the student within the tenant.
     result = await db.execute(
         select(User).where(
-            User.id == student_id,
-            User.tenant_id == faculty.tenant_id,
+            User.id == target_student_id,
+            User.tenant_id == tenant_id,
             User.role == "student",
         )
     )
@@ -80,7 +97,7 @@ async def enroll_student(
         # Compare against every other student's active enrollment.
         result = await db.execute(
             select(FaceVector).where(
-                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.tenant_id == tenant_id,
                 FaceVector.active.is_(True),
                 FaceVector.user_id != student.id,
             )
@@ -114,7 +131,7 @@ async def enroll_student(
         # Re-enrollment uses the next version and deactivates the old one.
         result = await db.execute(
             select(func.max(FaceVector.version)).where(
-                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.tenant_id == tenant_id,
                 FaceVector.user_id == student.id,
             )
         )
@@ -130,7 +147,7 @@ async def enroll_student(
         # Deactivate older versions before inserting the new active record.
         result = await db.execute(
             select(FaceVector).where(
-                FaceVector.tenant_id == faculty.tenant_id,
+                FaceVector.tenant_id == tenant_id,
                 FaceVector.user_id == student.id,
                 FaceVector.active.is_(True),
             )
@@ -139,12 +156,12 @@ async def enroll_student(
             old_enrollment.active = False
 
         enrollment = FaceVector(
-            tenant_id=faculty.tenant_id,
+            tenant_id=tenant_id,
             user_id=student.id,
             descriptor_enc=encrypted,
             version=new_version,
             active=True,
-            approved_by=faculty.id,
+            approved_by=approver_id,
             consent_at=datetime.now(timezone.utc),
         )
 

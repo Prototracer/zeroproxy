@@ -226,7 +226,11 @@ async def refresh_session(
     )
     user = result.scalar_one_or_none()
 
-    if user is None or user.status != "active":
+    if (
+        user is None
+        or user.status in ("inactive", "disabled")
+        or (user.role != "student" and user.status != "active")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
@@ -331,7 +335,13 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if user.status != "active":
+    if user.status in ("inactive", "disabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
+    if user.role != "student" and user.status != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",

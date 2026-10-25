@@ -7,7 +7,7 @@ import Login from './auth/Login.jsx';
 import Register from './auth/Register.jsx';
 import FacultyDashboard from './faculty/FacultyDashboard.jsx';
 import StudentDashboard from './student/StudentDashboard.jsx';
-import Enroll from './faculty/Enroll.jsx';
+import StudentEnroll from './student/StudentEnroll.jsx';
 import JoinRequests from './faculty/JoinRequests.jsx';
 import CameraTest from './student/CameraTest.jsx';
 import StudentAttendanceScanner from './student/StudentAttendanceScanner.jsx';
@@ -80,16 +80,16 @@ function ProtectedStudentScan() {
   return <StudentAttendanceScanner />;
 }
 
-function ProtectedEnroll() {
+function ProtectedStudentEnroll() {
   const token = sessionStorage.getItem('token');
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || role !== 'student') {
     return <Navigate to="/login" replace />;
   }
 
-  return <Enroll />;
+  return <StudentEnroll />;
 }
 
 function ProtectedJoinRequests() {
@@ -114,8 +114,9 @@ function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/faculty" element={<ProtectedFaculty />} />
         <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />
-        <Route path="/faculty/enroll" element={<ProtectedEnroll />} />
+        <Route path="/faculty/enroll" element={<Navigate to="/faculty" replace />} />
         <Route path="/student" element={<ProtectedStudent />} />
+        <Route path="/student/enroll" element={<ProtectedStudentEnroll />} />
         <Route path="/student/scan" element={<ProtectedStudentScan />} />
         <Route path="/camera-test" element={<CameraTest />} />
         <Route path="*" element={<Navigate to="/login" replace />} />

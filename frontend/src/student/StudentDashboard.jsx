@@ -208,9 +208,12 @@ function StudentDashboard() {
 
   function handleScanClick() {
     if (!studentInfo.has_face_enrollment || studentInfo.status !== "active") {
-      alert(
-        "Scan Unavailable:\n\nYour account is pending face enrollment. Please attend class and have your instructor complete your face enrollment before scanning attendance QR codes."
+      const confirmEnroll = window.confirm(
+        "Scan Unavailable:\n\nYour account is pending face enrollment. Would you like to complete face enrollment now?"
       );
+      if (confirmEnroll) {
+        navigate("/student/enroll");
+      }
       return;
     }
     navigate("/student/scan");
@@ -237,30 +240,38 @@ function StudentDashboard() {
 
   // Determine enrollment workflow guidance step
   let workflowStep = {
-    title: "Step 1: Join a Course",
-    desc: "Enter your faculty instructor's email and course code below to request admission to the class.",
-    color: "#67e8f9",
+    title: "Action Required: Complete Face Enrollment",
+    desc: "Enroll your face biometrics to activate your account and start marking verified attendance.",
+    color: "#fbbf24",
+    actionText: "Enroll Face Now →",
+    action: () => navigate("/student/enroll"),
   };
   const hasApproved = joinRequests.some((r) => r.status === "approved");
   const hasPending = joinRequests.some((r) => r.status === "pending");
 
   if (studentInfo.status === "active" && studentInfo.has_face_enrollment) {
-    workflowStep = {
-      title: "Step 4: Ready to Scan",
-      desc: "Your face enrollment is complete and verified. Click 'Scan QR / Mark Attendance' during lectures.",
-      color: "#4ade80",
-    };
-  } else if (hasApproved) {
-    workflowStep = {
-      title: "Step 3: Waiting for Face Enrollment in Class",
-      desc: "Your instructor approved your join request! Meet your instructor during class to complete one-time face enrollment.",
-      color: "#fbbf24",
-    };
+    if (hasApproved || metrics.totalClasses > 0) {
+      workflowStep = {
+        title: "Ready to Scan",
+        desc: "Your face enrollment is complete and verified. Click 'Scan QR / Mark Attendance' during lectures.",
+        color: "#4ade80",
+        actionText: "Scan Attendance →",
+        action: () => navigate("/student/scan"),
+      };
+    } else {
+      workflowStep = {
+        title: "Join a Course",
+        desc: "Enter your faculty instructor's join code or email below to request admission to classes.",
+        color: "#67e8f9",
+      };
+    }
   } else if (hasPending) {
     workflowStep = {
       title: "Step 2: Waiting for Faculty Approval",
-      desc: "Your join request has been sent to your instructor. Once approved, you will proceed to in-class face enrollment.",
+      desc: "Your join request has been sent to your instructor. Make sure your face enrollment is complete while waiting.",
       color: "#818cf8",
+      actionText: "Enroll Face Now →",
+      action: () => navigate("/student/enroll"),
     };
   }
 
@@ -297,6 +308,32 @@ function StudentDashboard() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <button
+            type="button"
+            onClick={() => navigate("/student/enroll")}
+            style={{
+              padding: "11px 20px",
+              borderRadius: "10px",
+              border: "1px solid rgba(38, 207, 255, 0.4)",
+              background:
+                studentInfo.has_face_enrollment && studentInfo.status === "active"
+                  ? "rgba(38, 207, 255, 0.12)"
+                  : "linear-gradient(135deg, #0284c7, #2563eb)",
+              color: "#ffffff",
+              fontWeight: 600,
+              fontSize: "14px",
+              cursor: "pointer",
+              boxShadow:
+                studentInfo.has_face_enrollment && studentInfo.status === "active"
+                  ? "none"
+                  : "0 4px 14px rgba(37, 99, 255, 0.4)",
+            }}
+          >
+            {studentInfo.has_face_enrollment && studentInfo.status === "active"
+              ? "👤 Re-enroll Face"
+              : "👤 Enroll Face"}
+          </button>
+
           <button
             type="button"
             onClick={handleScanClick}
@@ -432,6 +469,26 @@ function StudentDashboard() {
             {workflowStep.desc}
           </p>
         </div>
+
+        {workflowStep.actionText && (
+          <button
+            type="button"
+            onClick={workflowStep.action}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "10px",
+              border: "none",
+              background: "linear-gradient(135deg, #0284c7, #2563eb)",
+              color: "#ffffff",
+              fontWeight: 600,
+              fontSize: "13px",
+              cursor: "pointer",
+              boxShadow: "0 4px 14px rgba(37, 99, 255, 0.4)",
+            }}
+          >
+            {workflowStep.actionText}
+          </button>
+        )}
       </section>
 
       {/* Join Course Form & Pending Requests */}
