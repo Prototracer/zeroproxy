@@ -257,7 +257,7 @@ export default function StudentEnroll() {
     } catch (err) {
       const raw = err?.message || '';
       if (raw.includes('duplicate_face') || raw.toLowerCase().includes('duplicate')) {
-        setErrorMessage('Face biometric could not be registered. Please contact administration for assistance.');
+        setErrorMessage('Your face is already registered with another account. Please use your existing account or contact administration to reset your previous enrollment.');
       } else if (raw.toLowerCase().includes('already active') || raw.toLowerCase().includes('already enrolled')) {
         setErrorMessage('Face biometric is already enrolled and active. Re-enrollment requires a faculty or admin reset.');
       } else {
