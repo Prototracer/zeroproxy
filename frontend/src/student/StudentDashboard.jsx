@@ -33,6 +33,46 @@ function StudentDashboard() {
   const [instructors, setInstructors] = useState([]);
   const [cancellingId, setCancellingId] = useState(null);
 
+  // Enrolled classes & Leave Class state
+  const [enrolledClasses, setEnrolledClasses] = useState([]);
+  const [leaveModalClass, setLeaveModalClass] = useState(null);
+  const [leaveReason, setLeaveReason] = useState("");
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false);
+  const [leaveError, setLeaveError] = useState("");
+
+  async function loadEnrolledClasses() {
+    try {
+      const data = await apiRequest("/student/classes");
+      if (Array.isArray(data)) {
+        setEnrolledClasses(data);
+      }
+    } catch {
+      // silently handle
+    }
+  }
+
+  async function handleLeaveClass(e) {
+    if (e) e.preventDefault();
+    if (!leaveModalClass) return;
+
+    setLeaveSubmitting(true);
+    setLeaveError("");
+    try {
+      await apiRequest(`/student/classes/${leaveModalClass.id}/leave`, {
+        method: "POST",
+        body: JSON.stringify({ reason: leaveReason.trim() || undefined }),
+      });
+      setLeaveModalClass(null);
+      setLeaveReason("");
+      await loadEnrolledClasses();
+      await loadStudentData();
+    } catch (err) {
+      setLeaveError(err?.message || "Could not leave class. Please try again.");
+    } finally {
+      setLeaveSubmitting(false);
+    }
+  }
+
   async function loadJoinRequests() {
     try {
       const data = await apiRequest("/student/join-requests");
@@ -83,9 +123,11 @@ function StudentDashboard() {
     loadStudentData();
     loadJoinRequests();
     loadInstructors();
+    loadEnrolledClasses();
 
     const pollInterval = setInterval(() => {
       loadJoinRequests();
+      loadEnrolledClasses();
     }, 10000);
     return () => clearInterval(pollInterval);
   }, []);
@@ -499,6 +541,119 @@ function StudentDashboard() {
           >
             {workflowStep.actionText}
           </button>
+        )}
+      </section>
+
+      {/* My Enrolled Classes */}
+      <section
+        style={{
+          ...cardStyle,
+          marginBottom: "25px",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+              📚 My Enrolled Classes
+            </h3>
+            <p style={{ color: "#a5acc5", margin: "4px 0 0", fontSize: "13px" }}>
+              Classes you are actively enrolled in. You can mark attendance during these sessions.
+            </p>
+          </div>
+          <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+            {enrolledClasses.length} active course{enrolledClasses.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {enrolledClasses.length > 0 ? (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+              gap: "16px",
+            }}
+          >
+            {enrolledClasses.map((cls) => (
+              <div
+                key={cls.id}
+                style={{
+                  background: "rgba(255, 255, 255, 0.03)",
+                  border: "1px solid rgba(103, 232, 249, 0.2)",
+                  borderRadius: "12px",
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                  gap: "14px",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                    <h4 style={{ margin: 0, fontSize: "16px", color: "#f8fafc", fontWeight: 600 }}>
+                      {cls.name}
+                    </h4>
+                    <span
+                      style={{
+                        background: "rgba(6, 182, 212, 0.18)",
+                        color: "#67e8f9",
+                        padding: "3px 8px",
+                        borderRadius: "8px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {cls.code}
+                    </span>
+                  </div>
+
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                    {cls.semester} • Instructor: {cls.faculty_name || cls.faculty_email || "Faculty"}
+                  </div>
+
+                  <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                    Enrolled: {new Date(cls.enrolled_at).toLocaleDateString()}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLeaveModalClass(cls);
+                      setLeaveReason("");
+                      setLeaveError("");
+                    }}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(251, 113, 133, 0.4)",
+                      background: "rgba(251, 113, 133, 0.1)",
+                      color: "#fb7185",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    🚪 Leave Class
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: "24px",
+              textAlign: "center",
+              color: "#94a3b8",
+              fontSize: "13px",
+              background: "rgba(255, 255, 255, 0.02)",
+              borderRadius: "10px",
+            }}
+          >
+            You are not actively enrolled in any courses yet. Use the form below to enter a course join code.
+          </div>
         )}
       </section>
 
@@ -1036,6 +1191,130 @@ function StudentDashboard() {
           </table>
         </div>
       </section>
+
+      {/* Leave Class Confirmation Modal */}
+      {leaveModalClass && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#161b33",
+              border: "1px solid rgba(251, 113, 133, 0.4)",
+              borderRadius: "16px",
+              padding: "28px",
+              maxWidth: "460px",
+              width: "100%",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.6)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 12px", color: "#fb7185", fontSize: "19px" }}>
+              ⚠️ Leave Class Confirmation
+            </h3>
+            <p style={{ color: "#e2e8f0", fontSize: "14px", lineHeight: "1.5", margin: "0 0 16px" }}>
+              Are you sure you want to leave <strong>{leaveModalClass.name} ({leaveModalClass.code})</strong>?
+              You will not be able to mark attendance for lectures in this class unless you rejoin.
+            </p>
+
+            {leaveError && (
+              <div
+                style={{
+                  padding: "10px",
+                  borderRadius: "8px",
+                  background: "rgba(251, 113, 133, 0.15)",
+                  color: "#fb7185",
+                  fontSize: "13px",
+                  marginBottom: "14px",
+                  border: "1px solid rgba(251, 113, 133, 0.3)",
+                }}
+              >
+                {leaveError}
+              </div>
+            )}
+
+            <div style={{ marginBottom: "20px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "13px",
+                  color: "#cbd5e1",
+                  marginBottom: "6px",
+                }}
+              >
+                Reason for leaving (Optional):
+              </label>
+              <textarea
+                rows={2}
+                placeholder="e.g. Switched section, dropped elective, etc."
+                value={leaveReason}
+                onChange={(e) => setLeaveReason(e.target.value)}
+                style={{
+                  ...inputStyle,
+                  width: "100%",
+                  resize: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px" }}>
+              <button
+                type="button"
+                disabled={leaveSubmitting}
+                onClick={() => {
+                  setLeaveModalClass(null);
+                  setLeaveReason("");
+                  setLeaveError("");
+                }}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  border: "1px solid rgba(255, 255, 255, 0.2)",
+                  background: "transparent",
+                  color: "#cbd5e1",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={leaveSubmitting}
+                onClick={handleLeaveClass}
+                style={{
+                  padding: "10px 20px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "linear-gradient(135deg, #e11d48, #be123c)",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: leaveSubmitting ? "not-allowed" : "pointer",
+                  opacity: leaveSubmitting ? 0.7 : 1,
+                  boxShadow: "0 4px 12px rgba(225, 29, 72, 0.4)",
+                }}
+              >
+                {leaveSubmitting ? "Leaving..." : "Yes, Leave Class"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

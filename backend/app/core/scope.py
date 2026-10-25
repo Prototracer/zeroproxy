@@ -172,6 +172,7 @@ async def get_student_in_faculty_class_or_404(
             ClassEnrollment.student_id == student_id,
             Course.faculty_id == faculty.id,
             ClassEnrollment.tenant_id == faculty.tenant_id,
+            ClassEnrollment.active.is_(True),
         )
     )
     class_res = await db.execute(class_query)

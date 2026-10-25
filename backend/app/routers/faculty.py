@@ -20,7 +20,13 @@ from app.models.face_vector import FaceVector
 from app.models.join_request import JoinRequest
 from app.models.user import User
 from app.schemas.auth import ResetPasswordRequest, ResetPasswordResponse, UserResponse
-from app.schemas.classes import ClassResponse, CreateClassRequest
+from app.schemas.classes import (
+    ClassResponse,
+    ClassStudentItem,
+    ClassStudentsResponse,
+    CreateClassRequest,
+    RemoveStudentFromClassRequest,
+)
 from app.schemas.face_enrollment import FaceEnrollmentRequest
 from app.schemas.join_request import (
     ApproveJoinRequest,
@@ -145,12 +151,13 @@ async def approve_join_request(
     join_req.decided_at = now
     join_req.decided_by = faculty.id
 
-    # Add student to class_enrollments if not already present
+    # Add student to class_enrollments if not already actively enrolled
     enrollment_res = await db.execute(
         select(ClassEnrollment.id).where(
             ClassEnrollment.course_id == body.class_id,
             ClassEnrollment.student_id == join_req.student_id,
             ClassEnrollment.tenant_id == faculty.tenant_id,
+            ClassEnrollment.active.is_(True),
         )
     )
     if enrollment_res.scalar_one_or_none() is None:
@@ -515,6 +522,241 @@ async def regenerate_course_join_code(
         "message": f"New join code '{course.join_code}' generated and enabled.",
     }
 
+
+# ── Class Students Roster, Removal & Restoration ────────────────────────────
+
+@router.get(
+    "/classes/{id}/students",
+    response_model=ClassStudentsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def list_class_students(
+    id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all students (active and removed) in the specified class belonging to this faculty."""
+    course_res = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == faculty.tenant_id,
+        )
+    )
+    course = course_res.scalar_one_or_none()
+    if course is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Class not found or does not belong to you",
+        )
+
+    # Fetch all enrollments for this class
+    query = (
+        select(ClassEnrollment, User)
+        .join(User, User.id == ClassEnrollment.student_id)
+        .where(
+            ClassEnrollment.course_id == id,
+            ClassEnrollment.tenant_id == faculty.tenant_id,
+        )
+        .order_by(ClassEnrollment.id.desc())
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    active_students: list[ClassStudentItem] = []
+    removed_students: list[ClassStudentItem] = []
+    seen_active_student_ids = set()
+
+    for enrollment, student in rows:
+        item = ClassStudentItem(
+            enrollment_id=enrollment.id,
+            student_id=student.id,
+            name=student.name,
+            full_name=student.name,
+            roll_no=student.roll_no,
+            email=student.email,
+            active=enrollment.active,
+            enrolled_at=enrollment.enrolled_at,
+            left_at=enrollment.left_at,
+            ended_by=enrollment.ended_by,
+            reason=enrollment.reason,
+        )
+        if enrollment.active:
+            active_students.append(item)
+            seen_active_student_ids.add(student.id)
+        else:
+            if student.id not in seen_active_student_ids:
+                removed_students.append(item)
+
+    active_students.sort(key=lambda x: (x.roll_no or x.name))
+    removed_students.sort(key=lambda x: (x.roll_no or x.name))
+
+    return ClassStudentsResponse(
+        class_id=course.id,
+        class_name=course.name,
+        class_code=course.code,
+        active_students=active_students,
+        removed_students=removed_students,
+    )
+
+
+@router.post(
+    "/classes/{id}/students/{student_id}/remove",
+    status_code=status.HTTP_200_OK,
+)
+async def remove_student_from_class(
+    id: int,
+    student_id: int,
+    body: RemoveStudentFromClassRequest,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Faculty removes a student from a class. Requires a non-empty reason and logs audit event."""
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A valid reason is required to remove a student from the class.",
+        )
+
+    course_res = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == faculty.tenant_id,
+        )
+    )
+    course = course_res.scalar_one_or_none()
+    if course is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Class not found or does not belong to you",
+        )
+
+    enrollment_res = await db.execute(
+        select(ClassEnrollment).where(
+            ClassEnrollment.course_id == id,
+            ClassEnrollment.student_id == student_id,
+            ClassEnrollment.tenant_id == faculty.tenant_id,
+            ClassEnrollment.active.is_(True),
+        )
+    )
+    enrollment = enrollment_res.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student is not actively enrolled in this class",
+        )
+
+    now = datetime.now(timezone.utc)
+    enrollment.active = False
+    enrollment.left_at = now
+    enrollment.ended_by = "faculty"
+    enrollment.reason = body.reason.strip()
+
+    db.add(
+        AuditEvent(
+            tenant_id=faculty.tenant_id,
+            actor_id=faculty.id,
+            action="student_removed_from_class",
+            target=f"user:{student_id}",
+            meta={
+                "class_id": id,
+                "reason": enrollment.reason,
+            },
+        )
+    )
+    await db.commit()
+
+    return {
+        "status": "removed",
+        "message": f"Student successfully removed from {course.name} ({course.code}).",
+    }
+
+
+@router.post(
+    "/classes/{id}/students/{student_id}/restore",
+    status_code=status.HTTP_200_OK,
+)
+async def restore_student_to_class(
+    id: int,
+    student_id: int,
+    faculty: User = Depends(require_role("faculty")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Faculty restores a previously removed student to the class. Logs audit event."""
+    course_res = await db.execute(
+        select(Course).where(
+            Course.id == id,
+            Course.faculty_id == faculty.id,
+            Course.tenant_id == faculty.tenant_id,
+        )
+    )
+    course = course_res.scalar_one_or_none()
+    if course is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Class not found or does not belong to you",
+        )
+
+    # Check if already active
+    active_enrollment = (
+        await db.execute(
+            select(ClassEnrollment.id).where(
+                ClassEnrollment.course_id == id,
+                ClassEnrollment.student_id == student_id,
+                ClassEnrollment.tenant_id == faculty.tenant_id,
+                ClassEnrollment.active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if active_enrollment is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Student is already actively enrolled in this class",
+        )
+
+    # Verify student exists in tenant
+    student_res = await db.execute(
+        select(User).where(
+            User.id == student_id,
+            User.tenant_id == faculty.tenant_id,
+            User.role == "student",
+        )
+    )
+    student = student_res.scalar_one_or_none()
+    if student is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    new_enrollment = ClassEnrollment(
+        tenant_id=faculty.tenant_id,
+        course_id=id,
+        student_id=student_id,
+        active=True,
+        enrolled_at=now,
+    )
+    db.add(new_enrollment)
+
+    db.add(
+        AuditEvent(
+            tenant_id=faculty.tenant_id,
+            actor_id=faculty.id,
+            action="student_restored_to_class",
+            target=f"user:{student_id}",
+            meta={
+                "class_id": id,
+            },
+        )
+    )
+    await db.commit()
+
+    return {
+        "status": "restored",
+        "message": f"Student successfully restored to {course.name} ({course.code}).",
+    }
 
 
 # ── In-Person Password Reset ─────────────────────────────────────────────────

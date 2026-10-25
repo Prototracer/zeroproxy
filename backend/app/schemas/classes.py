@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -27,3 +28,42 @@ class ClassResponse(BaseModel):
     join_code_enabled: bool | None = True
 
 
+class StudentClassItem(BaseModel):
+    id: int
+    name: str
+    code: str
+    semester: str
+    faculty_name: str | None = None
+    faculty_email: str | None = None
+    enrolled_at: datetime
+    active: bool
+
+
+class LeaveClassRequest(BaseModel):
+    reason: str | None = None
+
+
+class RemoveStudentFromClassRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
+
+
+class ClassStudentItem(BaseModel):
+    enrollment_id: int
+    student_id: int
+    name: str
+    full_name: str
+    roll_no: str
+    email: str
+    active: bool
+    enrolled_at: datetime
+    left_at: datetime | None = None
+    ended_by: str | None = None
+    reason: str | None = None
+
+
+class ClassStudentsResponse(BaseModel):
+    class_id: int
+    class_name: str
+    class_code: str
+    active_students: list[ClassStudentItem]
+    removed_students: list[ClassStudentItem]

@@ -1,13 +1,15 @@
-
 from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
-    UniqueConstraint,
+    String,
+    Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,11 +20,13 @@ class ClassEnrollment(Base):
     __tablename__ = "class_enrollments"
 
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_class_enrollments_active_student_course",
             "tenant_id",
             "course_id",
             "student_id",
-            name="uq_class_enrollment_student_course",
+            unique=True,
+            postgresql_where=text("active IS TRUE"),
         ),
     )
 
@@ -61,4 +65,19 @@ class ClassEnrollment(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+
+    left_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    ended_by: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )

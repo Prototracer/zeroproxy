@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,11 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import require_role
 from app.core.rate_limiter import limiter
 from app.db import get_db
+from app.models.audit import AuditEvent
 from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
 from app.models.join_request import JoinRequest
 from app.models.user import User
 from app.schemas.auth import UserResponse
+from app.schemas.classes import LeaveClassRequest, StudentClassItem
 from app.schemas.face_enrollment import FaceEnrollmentRequest
 from app.schemas.join_request import (
     CreateJoinRequest,
@@ -85,21 +88,28 @@ async def create_join_request(
                 detail=f"Join requests for {course.name} ({course.code}) are currently disabled by the instructor.",
             )
 
-        # Check if already enrolled in this course
-        already_enrolled = (
+        # 1. Check if student has active enrollment or prior removal
+        membership = (
             await db.execute(
-                select(ClassEnrollment.id).where(
+                select(ClassEnrollment).where(
                     ClassEnrollment.student_id == student.id,
                     ClassEnrollment.course_id == course.id,
                     ClassEnrollment.tenant_id == student.tenant_id,
-                )
+                ).order_by(ClassEnrollment.id.desc()).limit(1)
             )
         ).scalar_one_or_none()
-        if already_enrolled is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"You are already enrolled in {course.name} ({course.code}).",
-            )
+        if membership is not None:
+            if getattr(membership, "active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"You are already enrolled in {course.name} ({course.code}).",
+                )
+            elif getattr(membership, "ended_by", None) == "faculty":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"You were removed from {course.name} ({course.code}) by the instructor and cannot rejoin via code. Please contact your instructor.",
+                )
+
 
         # Check if student already has a pending or approved request for this course
         existing_jr = (
@@ -176,21 +186,27 @@ async def create_join_request(
         if target_class:
             target_class_id = target_class.id
 
-            # Check if student is already enrolled in this class
-            already_enrolled = (
+            membership = (
                 await db.execute(
-                    select(ClassEnrollment.id).where(
+                    select(ClassEnrollment).where(
                         ClassEnrollment.student_id == student.id,
                         ClassEnrollment.course_id == target_class_id,
                         ClassEnrollment.tenant_id == student.tenant_id,
-                    )
+                    ).order_by(ClassEnrollment.id.desc()).limit(1)
                 )
             ).scalar_one_or_none()
-            if already_enrolled is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"You are already enrolled in course {body.course_code.strip()}.",
-                )
+            if membership is not None:
+                if getattr(membership, "active", True):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"You are already enrolled in course {body.course_code.strip()}.",
+                    )
+                elif getattr(membership, "ended_by", None) == "faculty":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"You were removed from course {body.course_code.strip()} by the instructor and cannot rejoin via code. Please contact your instructor.",
+                    )
+
 
     # Check for existing pending or approved request in a single query
     existing_res = await db.execute(
@@ -411,4 +427,99 @@ async def enroll_student_face_self(
         )
     )
     return result.scalar_one()
+
+
+# ── Student Classes & Leaving Class ──────────────────────────────────────────
+
+@router.get(
+    "/classes",
+    response_model=list[StudentClassItem],
+    status_code=status.HTTP_200_OK,
+)
+async def list_enrolled_classes(
+    student: User = Depends(require_role("student")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all classes in which the student is currently actively enrolled."""
+    query = (
+        select(Course, ClassEnrollment, User)
+        .join(ClassEnrollment, ClassEnrollment.course_id == Course.id)
+        .join(User, User.id == Course.faculty_id)
+        .where(
+            ClassEnrollment.student_id == student.id,
+            ClassEnrollment.tenant_id == student.tenant_id,
+            ClassEnrollment.active.is_(True),
+        )
+        .order_by(Course.name.asc())
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    return [
+        StudentClassItem(
+            id=course.id,
+            name=course.name,
+            code=course.code,
+            semester=course.semester,
+            faculty_name=faculty.name,
+            faculty_email=faculty.email,
+            enrolled_at=enrollment.enrolled_at,
+            active=enrollment.active,
+        )
+        for course, enrollment, faculty in rows
+    ]
+
+
+@router.post(
+    "/classes/{class_id}/leave",
+    status_code=status.HTTP_200_OK,
+)
+async def leave_class(
+    class_id: int,
+    body: LeaveClassRequest | None = None,
+    student: User = Depends(require_role("student")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Allows a student to leave an actively enrolled class with full audit logging."""
+    enrollment_res = await db.execute(
+        select(ClassEnrollment).where(
+            ClassEnrollment.student_id == student.id,
+            ClassEnrollment.course_id == class_id,
+            ClassEnrollment.tenant_id == student.tenant_id,
+            ClassEnrollment.active.is_(True),
+        )
+    )
+    enrollment = enrollment_res.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="You are not actively enrolled in this class",
+        )
+
+    now = datetime.now(timezone.utc)
+    enrollment.active = False
+    enrollment.left_at = now
+    enrollment.ended_by = "student"
+    enrollment.reason = (body and body.reason and body.reason.strip()) or "Student left class voluntarily"
+
+    # Audit event logged
+    db.add(
+        AuditEvent(
+            tenant_id=student.tenant_id,
+            actor_id=student.id,
+            action="class_leave",
+            target=f"course:{class_id}",
+            meta={
+                "enrollment_id": enrollment.id,
+                "reason": enrollment.reason,
+            },
+        )
+    )
+    await db.commit()
+
+    return {
+        "status": "left",
+        "message": "You have successfully left the class.",
+    }
+
 

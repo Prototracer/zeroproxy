@@ -27,6 +27,76 @@ function FacultyDashboard() {
   const [courseSemester, setCourseSemester] = useState('Semester 3');
   const [courseMessage, setCourseMessage] = useState('');
 
+  // Class Students Roster & Removal/Restoration state
+  const [rosterModalCourse, setRosterModalCourse] = useState(null);
+  const [rosterTab, setRosterTab] = useState('active'); // 'active' | 'removed'
+  const [rosterData, setRosterData] = useState({ active_students: [], removed_students: [] });
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState('');
+  const [removeStudentTarget, setRemoveStudentTarget] = useState(null);
+  const [removeReason, setRemoveReason] = useState('');
+  const [removeSubmitting, setRemoveSubmitting] = useState(false);
+  const [restoreSubmitting, setRestoreSubmitting] = useState(false);
+
+  async function openRosterModal(course) {
+    setRosterModalCourse(course);
+    setRosterTab('active');
+    setRosterLoading(true);
+    setRosterError('');
+    try {
+      const data = await apiRequest(`/faculty/classes/${course.id}/students`);
+      setRosterData(data || { active_students: [], removed_students: [] });
+    } catch (err) {
+      setRosterError(err.message || 'Failed to load class students.');
+    } finally {
+      setRosterLoading(false);
+    }
+  }
+
+  async function handleRemoveStudent() {
+    if (!removeStudentTarget || !rosterModalCourse) return;
+    if (!removeReason.trim()) {
+      alert('A reason is required to remove a student.');
+      return;
+    }
+    setRemoveSubmitting(true);
+    try {
+      await apiRequest(`/faculty/classes/${rosterModalCourse.id}/students/${removeStudentTarget.student_id}/remove`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: removeReason.trim() }),
+      });
+      setRemoveStudentTarget(null);
+      setRemoveReason('');
+      const fresh = await apiRequest(`/faculty/classes/${rosterModalCourse.id}/students`);
+      setRosterData(fresh);
+      loadClasses();
+    } catch (err) {
+      alert(err.message || 'Failed to remove student.');
+    } finally {
+      setRemoveSubmitting(false);
+    }
+  }
+
+  async function handleRestoreStudent(student) {
+    if (!rosterModalCourse) return;
+    if (!window.confirm(`Restore ${student.full_name || student.name} (${student.roll_no}) to ${rosterModalCourse.name}?`)) {
+      return;
+    }
+    setRestoreSubmitting(true);
+    try {
+      await apiRequest(`/faculty/classes/${rosterModalCourse.id}/students/${student.student_id}/restore`, {
+        method: 'POST',
+      });
+      const fresh = await apiRequest(`/faculty/classes/${rosterModalCourse.id}/students`);
+      setRosterData(fresh);
+      loadClasses();
+    } catch (err) {
+      alert(err.message || 'Failed to restore student.');
+    } finally {
+      setRestoreSubmitting(false);
+    }
+  }
+
   const qrPollTimerRef = useRef(null);
   const livePollTimerRef = useRef(null);
 
@@ -1096,6 +1166,23 @@ function FacultyDashboard() {
 
                       <button
                         type="button"
+                        onClick={() => openRosterModal(c)}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(103, 232, 249, 0.15)',
+                          border: '1px solid rgba(103, 232, 249, 0.35)',
+                          color: '#67e8f9',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        👥 Students ({c.student_count ?? 0})
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => {
                           setSelectedClassId(String(c.id));
                           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1120,6 +1207,344 @@ function FacultyDashboard() {
             })}
           </div>
         </section>
+
+        {/* ── Modal: Class Students Roster ──────────────────────────────── */}
+        {rosterModalCourse && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.75)',
+              backdropFilter: 'blur(5px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                background: '#0f172a',
+                border: '1px solid rgba(103, 232, 249, 0.3)',
+                borderRadius: '16px',
+                padding: '26px',
+                maxWidth: '850px',
+                width: '100%',
+                maxHeight: '85vh',
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+                color: '#ffffff',
+              }}
+            >
+              {/* Modal Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '18px' }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '20px', color: '#67e8f9' }}>
+                    👥 Students in {rosterModalCourse.name} ({rosterModalCourse.code})
+                  </h3>
+                  <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '13px' }}>
+                    Manage active students or view and restore previously removed students
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setRosterModalCourse(null)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#94a3b8',
+                    fontSize: '20px',
+                    cursor: 'pointer',
+                    padding: '4px 8px',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Roster Tabs */}
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '18px', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', paddingBottom: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => setRosterTab('active')}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: rosterTab === 'active' ? 'linear-gradient(135deg, #0284c7, #2563eb)' : 'rgba(255, 255, 255, 0.05)',
+                    color: rosterTab === 'active' ? '#ffffff' : '#94a3b8',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Active Students ({rosterData.active_students?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRosterTab('removed')}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: rosterTab === 'removed' ? 'linear-gradient(135deg, #e11d48, #be123c)' : 'rgba(255, 255, 255, 0.05)',
+                    color: rosterTab === 'removed' ? '#ffffff' : '#94a3b8',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Removed Students ({rosterData.removed_students?.length || 0})
+                </button>
+              </div>
+
+              {rosterError && (
+                <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5', marginBottom: '14px', fontSize: '13px' }}>
+                  {rosterError}
+                </div>
+              )}
+
+              {/* Tab Content */}
+              <div style={{ overflowY: 'auto', flex: 1 }}>
+                {rosterLoading ? (
+                  <p style={{ textAlign: 'center', color: '#94a3b8', padding: '30px' }}>Loading student roster...</p>
+                ) : rosterTab === 'active' ? (
+                  rosterData.active_students && rosterData.active_students.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+                      <thead>
+                        <tr style={{ color: '#67e8f9', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                          <th style={{ padding: '10px' }}>Full Name</th>
+                          <th style={{ padding: '10px' }}>Roll Number</th>
+                          <th style={{ padding: '10px' }}>Email</th>
+                          <th style={{ padding: '10px' }}>Enrolled Date</th>
+                          <th style={{ padding: '10px', textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rosterData.active_students.map((st) => (
+                          <tr key={st.enrollment_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                            <td style={{ padding: '12px 10px', fontWeight: 600 }}>{st.full_name || st.name}</td>
+                            <td style={{ padding: '12px 10px', color: '#cbd5e1' }}>
+                              <span style={{ background: 'rgba(6, 182, 212, 0.15)', color: '#67e8f9', padding: '2px 8px', borderRadius: '6px', fontWeight: 700 }}>
+                                {st.roll_no}
+                              </span>
+                            </td>
+                            <td style={{ padding: '12px 10px', color: '#94a3b8' }}>{st.email}</td>
+                            <td style={{ padding: '12px 10px', color: '#94a3b8' }}>{new Date(st.enrolled_at).toLocaleDateString()}</td>
+                            <td style={{ padding: '12px 10px', textAlign: 'right' }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRemoveStudentTarget(st);
+                                  setRemoveReason('');
+                                }}
+                                style={{
+                                  padding: '5px 12px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                                  background: 'rgba(239, 68, 68, 0.12)',
+                                  color: '#f87171',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                ✕ Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p style={{ textAlign: 'center', color: '#94a3b8', padding: '40px 0' }}>
+                      No active students are currently enrolled in this class.
+                    </p>
+                  )
+                ) : (
+                  rosterData.removed_students && rosterData.removed_students.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+                      <thead>
+                        <tr style={{ color: '#fb7185', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                          <th style={{ padding: '10px' }}>Full Name</th>
+                          <th style={{ padding: '10px' }}>Roll Number</th>
+                          <th style={{ padding: '10px' }}>Removal Reason</th>
+                          <th style={{ padding: '10px' }}>Removed Date</th>
+                          <th style={{ padding: '10px', textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rosterData.removed_students.map((st) => (
+                          <tr key={st.enrollment_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                            <td style={{ padding: '12px 10px', fontWeight: 600 }}>{st.full_name || st.name}</td>
+                            <td style={{ padding: '12px 10px', color: '#cbd5e1' }}>{st.roll_no}</td>
+                            <td style={{ padding: '12px 10px', color: '#fca5a5', maxWidth: '200px' }}>
+                              {st.reason || (st.ended_by === 'student' ? 'Student left class' : 'Removed by faculty')}
+                            </td>
+                            <td style={{ padding: '12px 10px', color: '#94a3b8' }}>
+                              {st.left_at ? new Date(st.left_at).toLocaleDateString() : 'N/A'}
+                            </td>
+                            <td style={{ padding: '12px 10px', textAlign: 'right' }}>
+                              <button
+                                type="button"
+                                disabled={restoreSubmitting}
+                                onClick={() => handleRestoreStudent(st)}
+                                style={{
+                                  padding: '5px 12px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(74, 222, 128, 0.4)',
+                                  background: 'rgba(74, 222, 128, 0.12)',
+                                  color: '#4ade80',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: restoreSubmitting ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                ⟲ Restore to Class
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p style={{ textAlign: 'center', color: '#94a3b8', padding: '40px 0' }}>
+                      No students have been removed from this class.
+                    </p>
+                  )
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '18px', borderTop: '1px solid rgba(255, 255, 255, 0.1)', paddingTop: '14px' }}>
+                <button
+                  type="button"
+                  onClick={() => setRosterModalCourse(null)}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    background: 'transparent',
+                    color: '#cbd5e1',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Sub-Modal: Remove Student Confirmation & Reason ──────────────── */}
+        {removeStudentTarget && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.8)',
+              backdropFilter: 'blur(4px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1100,
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                background: '#161b33',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: '16px',
+                padding: '26px',
+                maxWidth: '460px',
+                width: '100%',
+                boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+                color: '#ffffff',
+              }}
+            >
+              <h3 style={{ margin: '0 0 10px', color: '#f87171', fontSize: '18px' }}>
+                ⚠️ Remove Student from Class
+              </h3>
+              <p style={{ color: '#e2e8f0', fontSize: '13px', lineHeight: '1.5', margin: '0 0 12px' }}>
+                Remove <strong>{removeStudentTarget.full_name || removeStudentTarget.name}</strong> ({removeStudentTarget.roll_no}) from <strong>{rosterModalCourse?.name}</strong>?
+              </p>
+              <p style={{ color: '#fca5a5', fontSize: '12px', margin: '0 0 16px', background: 'rgba(239, 68, 68, 0.12)', padding: '8px 12px', borderRadius: '8px' }}>
+                🔒 The removed student will <strong>not</strong> be able to rejoin this class using the join code.
+              </p>
+
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ display: 'block', fontSize: '13px', color: '#cbd5e1', marginBottom: '6px' }}>
+                  Reason for Removal <span style={{ color: '#fb7185' }}>*</span>:
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  placeholder="e.g. Dropped course, moved section, attendance debarment"
+                  value={removeReason}
+                  onChange={(e) => setRemoveReason(e.target.value)}
+                  style={{
+                    ...inputStyle,
+                    width: '100%',
+                    resize: 'none',
+                    boxSizing: 'border-box',
+                    marginBottom: 0,
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  type="button"
+                  disabled={removeSubmitting}
+                  onClick={() => {
+                    setRemoveStudentTarget(null);
+                    setRemoveReason('');
+                  }}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    background: 'transparent',
+                    color: '#cbd5e1',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={removeSubmitting || !removeReason.trim()}
+                  onClick={handleRemoveStudent}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #e11d48, #be123c)',
+                    color: '#ffffff',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: removeSubmitting || !removeReason.trim() ? 'not-allowed' : 'pointer',
+                    opacity: removeSubmitting || !removeReason.trim() ? 0.6 : 1,
+                  }}
+                >
+                  {removeSubmitting ? 'Removing...' : 'Confirm Removal'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
