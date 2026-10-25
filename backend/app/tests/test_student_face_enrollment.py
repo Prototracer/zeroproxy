@@ -63,7 +63,7 @@ def test_student_enroll_face_success(student_client):
     mock_student_res = MagicMock()
     mock_student_res.scalar_one_or_none.return_value = student
 
-    # 2. Existing active enrollments check (no duplicates)
+    # 2. Existing active enrollments check (no duplicates across other students)
     mock_active_res = MagicMock()
     mock_active_res.scalars.return_value.all.return_value = []
 
@@ -98,3 +98,49 @@ def test_student_enroll_face_success(student_client):
     assert response.status_code == 200
     assert response.json()["id"] == student.id
     assert student.status == "active"
+
+
+def test_student_re_enrollment_rejected_if_already_active(student_client):
+    client, db, student = student_client
+    student.status = "active"
+
+    mock_student_res = MagicMock()
+    mock_student_res.scalar_one_or_none.return_value = student
+    db.execute.return_value = mock_student_res
+
+    response = client.post(
+        "/student/enroll",
+        json={
+            "descriptors": [[0.05 + i * 0.001] * 128 for i in range(3)],
+            "consent": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "already active" in response.json()["detail"].lower()
+
+
+def test_student_enroll_never_accepts_images(student_client):
+    client, db, student = student_client
+
+    # 1. Sending image data URL or file payload
+    response = client.post(
+        "/student/enroll",
+        json={
+            "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD...",
+            "consent": True,
+        },
+    )
+    # Pydantic validates FaceEnrollmentRequest: descriptors required, image is not accepted
+    assert response.status_code == 422
+
+    # 2. Sending string instead of 128-float list
+    response2 = client.post(
+        "/student/enroll",
+        json={
+            "descriptors": ["not_a_vector", "not_a_vector", "not_a_vector"],
+            "consent": True,
+        },
+    )
+    assert response2.status_code == 422
+

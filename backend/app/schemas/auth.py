@@ -5,6 +5,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     roll_no: str = Field(default="", max_length=50)
     password: str = Field(min_length=8, max_length=128)
+    role: str | None = Field(default=None)
 
 class UserResponse(BaseModel):
     model_config=ConfigDict(from_attributes=True)

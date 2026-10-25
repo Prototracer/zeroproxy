@@ -93,6 +93,12 @@ async def enroll_student(
             "Student not found in your tenant"
         )
 
+    # Re-enrollment without a reset is rejected (handbook §1 & §8.1)
+    if student.status != "pending":
+        raise EnrollmentDataError(
+            "Student is already active. Re-enrollment requires a reset."
+        )
+
     try:
         # Compare against every other student's active enrollment.
         result = await db.execute(
