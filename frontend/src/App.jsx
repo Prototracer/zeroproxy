@@ -12,6 +12,7 @@ import JoinRequests from './faculty/JoinRequests.jsx';
 import CameraTest from './student/CameraTest.jsx';
 import StudentAttendanceScanner from './student/StudentAttendanceScanner.jsx';
 import LiveSession from './faculty/LiveSession.jsx';
+import AdminDashboard from './admin/AdminDashboard.jsx';
 
 function GlobalCameraGuard() {
   const location = useLocation();
@@ -50,7 +51,7 @@ function ProtectedFaculty() {
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || (role !== 'faculty' && role !== 'admin')) {
     return <Navigate to="/login" replace />;
   }
 
@@ -98,7 +99,7 @@ function ProtectedJoinRequests() {
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || (role !== 'faculty' && role !== 'admin')) {
     return <Navigate to="/login" replace />;
   }
 
@@ -110,11 +111,23 @@ function ProtectedLiveSession() {
   const isLoggedIn = sessionStorage.getItem('isLoggedIn');
   const role = (sessionStorage.getItem('role') || '').toLowerCase();
 
-  if (isLoggedIn !== 'true' || !token || role !== 'faculty') {
+  if (isLoggedIn !== 'true' || !token || (role !== 'faculty' && role !== 'admin')) {
     return <Navigate to="/login" replace />;
   }
 
   return <LiveSession />;
+}
+
+function ProtectedAdmin() {
+  const token = sessionStorage.getItem('token');
+  const isLoggedIn = sessionStorage.getItem('isLoggedIn');
+  const role = (sessionStorage.getItem('role') || '').toLowerCase();
+
+  if (isLoggedIn !== 'true' || !token || role !== 'admin') {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <AdminDashboard />;
 }
 
 function App() {
@@ -125,6 +138,7 @@ function App() {
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/admin" element={<ProtectedAdmin />} />
         <Route path="/faculty" element={<ProtectedFaculty />} />
         <Route path="/faculty/sessions/:id" element={<ProtectedLiveSession />} />
         <Route path="/faculty/join-requests" element={<ProtectedJoinRequests />} />

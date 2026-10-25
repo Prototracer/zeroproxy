@@ -87,7 +87,9 @@ function Login() {
 
       // Route accordingly
       setTimeout(() => {
-        if (userRole === 'faculty' || userRole === 'admin') {
+        if (userRole === 'admin') {
+          navigate('/admin');
+        } else if (userRole === 'faculty') {
           navigate('/faculty');
         } else {
           navigate('/student');

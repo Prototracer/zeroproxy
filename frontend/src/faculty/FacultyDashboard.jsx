@@ -418,7 +418,25 @@ function FacultyDashboard() {
               )}
             </button>
 
-
+            {sessionStorage.getItem('role') === 'admin' && (
+              <button
+                type="button"
+                onClick={() => navigate('/admin')}
+                style={{
+                  padding: '10px 18px',
+                  background: 'linear-gradient(135deg, #a855f7, #6366f1)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 14px rgba(168, 85, 247, 0.35)',
+                }}
+              >
+                ⚙️ Admin Console
+              </button>
+            )}
 
             <button
               type="button"
