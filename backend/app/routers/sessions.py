@@ -18,11 +18,16 @@ from app.core.deps import require_role
 from app.db import get_db
 from app.models.attendance_log import AttendanceLog
 from app.models.attendance_session import AttendanceSession
+from app.models.audit import AuditEvent
 from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
+from app.models.override import Override
 from app.models.user import User
 from app.schemas.attendance import (
     CreateSessionRequest,
+    LiveAttendanceResponse,
+    MarkedStudentEntry,
+    NotMarkedStudentEntry,
     OverrideAttendanceRequest,
     OverrideAttendanceResponse,
     QRTokenResponse,
@@ -128,39 +133,141 @@ async def get_qr_token(
 
 # ── GET /sessions/{id}/live ──────────────────────────────────────────────────
 
-@router.get("/{session_id}/live")
+VALID_REASONS = {"hackathon", "sports", "medical", "no_biometric_consent", "other"}
+
+
+def _normalize_override_reason(reason_str: str, note_str: str | None) -> tuple[str, str | None]:
+    r = reason_str.strip().lower()
+    if r in VALID_REASONS:
+        if r == "other" and (not note_str or not note_str.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Note is required when reason is 'other'",
+            )
+        return r, (note_str.strip() if note_str else None)
+
+    note = note_str or reason_str
+    if "med" in r:
+        return "medical", note
+    elif "sport" in r or "duty" in r:
+        return "sports", note
+    elif "hack" in r:
+        return "hackathon", note
+    elif "consent" in r or "bio" in r:
+        return "no_biometric_consent", note
+    else:
+        return "other", note
+
+
+@router.get("/{session_id}/live", response_model=LiveAttendanceResponse)
 async def get_live_count(
     session_id: int,
     faculty: User = Depends(require_role("faculty")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return the current attendance count for the session (handbook §7).
-    Only the session owner can call this.
+    Return the live attendance data and student rosters for the session (handbook §7).
+    Only the session owner can call this. Out-of-scope faculty returns 404.
     """
     session = await _get_owned_session(session_id, faculty, db)
 
-    result = await db.execute(
-        select(AttendanceLog).where(
+    # 1. Fetch course details
+    course_res = await db.execute(
+        select(Course).where(Course.id == session.course_id)
+    )
+    course = course_res.scalar_one_or_none()
+    class_name = course.name if course else "Unknown Class"
+
+    # 2. Fetch enrolled active students
+    students_res = await db.execute(
+        select(User)
+        .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
+        .where(
+            ClassEnrollment.course_id == session.course_id,
+            ClassEnrollment.tenant_id == faculty.tenant_id,
+            ClassEnrollment.active.is_(True),
+            User.role == "student",
+            User.tenant_id == faculty.tenant_id,
+        )
+        .order_by(User.roll_no.asc(), User.name.asc())
+    )
+    enrolled_students = list(students_res.scalars().all())
+    student_map = {st.id: st for st in enrolled_students}
+    total_in_class = len(enrolled_students)
+
+    # 3. Fetch attendance logs for this session (newest first)
+    logs_res = await db.execute(
+        select(AttendanceLog)
+        .where(
             AttendanceLog.session_id == session.id,
             AttendanceLog.tenant_id == faculty.tenant_id,
         )
+        .order_by(AttendanceLog.marked_at.desc())
     )
-    logs = result.scalars().all()
+    logs = list(logs_res.scalars().all())
 
-    return {
-        "session_id": session.id,
-        "status": session.status,
-        "present_count": len(logs),
-        "records": [
-            {
-                "student_id": log.student_id,
-                "marked_at": log.marked_at.isoformat(),
-                "source": log.source,
-            }
-            for log in logs
-        ],
-    }
+    # 4. Fetch overrides for reasons
+    overrides_res = await db.execute(
+        select(Override).where(
+            Override.session_id == session.id,
+            Override.tenant_id == faculty.tenant_id,
+        )
+    )
+    overrides = list(overrides_res.scalars().all())
+    override_map = {ov.student_id: ov.reason for ov in overrides}
+
+    # 5. Build marked list
+    marked: list[MarkedStudentEntry] = []
+    marked_ids: set[int] = set()
+    records: list[dict] = []
+
+    for log in logs:
+        marked_ids.add(log.student_id)
+        st = student_map.get(log.student_id)
+        name = st.name if st else f"Student #{log.student_id}"
+        roll_no = st.roll_no if st else str(log.student_id)
+        reason = override_map.get(log.student_id)
+
+        marked.append(
+            MarkedStudentEntry(
+                student_id=log.student_id,
+                name=name,
+                roll_no=roll_no,
+                marked_at=log.marked_at,
+                source=log.source,
+                reason=reason,
+            )
+        )
+        records.append({
+            "student_id": log.student_id,
+            "marked_at": log.marked_at.isoformat() if hasattr(log.marked_at, "isoformat") else str(log.marked_at),
+            "source": log.source,
+        })
+
+    # 6. Build not_marked list
+    not_marked = [
+        NotMarkedStudentEntry(
+            student_id=st.id,
+            name=st.name,
+            roll_no=st.roll_no,
+        )
+        for st in enrolled_students
+        if st.id not in marked_ids
+    ]
+
+    return LiveAttendanceResponse(
+        session_id=session.id,
+        class_name=class_name,
+        course_name=class_name,
+        session_status=session.status,
+        status=session.status,
+        total_in_class=total_in_class,
+        marked_count=len(marked),
+        present_count=len(marked),
+        marked=marked,
+        not_marked=not_marked,
+        records=records,
+    )
 
 
 # ── POST /sessions/{id}/override ─────────────────────────────────────────────
@@ -180,74 +287,179 @@ async def override_attendance(
     Manual attendance by faculty with reason and audit (handbook §7).
     Allowed for the session's own faculty even after the session ended
     (late medical or duty cases); logged with source='override'.
+    Supports single or bulk marking (up to 50 students).
     """
     session = await _get_owned_session(session_id, faculty, db)
 
-    # 1. Verify student exists in the same tenant and is a student
-    student_result = await db.execute(
-        select(User).where(
-            User.id == body.student_id,
-            User.tenant_id == faculty.tenant_id,
-            User.role == "student",
-        )
-    )
-    student = student_result.scalar_one_or_none()
-    if student is None:
+    # 1. Normalize reason and note
+    reason, note = _normalize_override_reason(body.reason, body.note)
+
+    # 2. Extract and deduplicate student IDs
+    raw_ids: list[int] = []
+    if body.student_ids:
+        raw_ids.extend(body.student_ids)
+    if body.student_id is not None:
+        raw_ids.append(body.student_id)
+
+    if not raw_ids:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student not found",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one student_id or student_ids must be provided",
         )
 
-    # 2. Verify student is enrolled in the session's course
-    enrollment_result = await db.execute(
-        select(ClassEnrollment.id).where(
-            ClassEnrollment.course_id == session.course_id,
-            ClassEnrollment.student_id == student.id,
-            ClassEnrollment.tenant_id == faculty.tenant_id,
-            ClassEnrollment.active.is_(True),
-        )
-    )
-    if enrollment_result.scalar_one_or_none() is None:
+    target_ids = list(dict.fromkeys(raw_ids))
+    if len(target_ids) > 50:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student not found",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot override more than 50 students in a single request",
         )
 
-    # 3. Check duplicate attendance
-    existing_log = await db.execute(
-        select(AttendanceLog.id).where(
-            AttendanceLog.session_id == session.id,
-            AttendanceLog.student_id == student.id,
+    # 3. Check students and enrollments
+    if len(target_ids) == 1:
+        single_id = target_ids[0]
+        # Query 2: student check
+        student_result = await db.execute(
+            select(User).where(
+                User.id == single_id,
+                User.tenant_id == faculty.tenant_id,
+                User.role == "student",
+            )
         )
-    )
-    if existing_log.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="already_marked",
+        if student_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Student not found",
+            )
+
+        # Query 3: enrollment check
+        enrollment_result = await db.execute(
+            select(ClassEnrollment.id).where(
+                ClassEnrollment.course_id == session.course_id,
+                ClassEnrollment.student_id == single_id,
+                ClassEnrollment.tenant_id == faculty.tenant_id,
+                ClassEnrollment.active.is_(True),
+            )
         )
+        if enrollment_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Student not found",
+            )
+
+        # Query 4: existing log check
+        existing_log = await db.execute(
+            select(AttendanceLog.id).where(
+                AttendanceLog.session_id == session.id,
+                AttendanceLog.student_id == single_id,
+            )
+        )
+        is_already_marked = existing_log.scalar_one_or_none() is not None
+
+        if is_already_marked:
+            if body.student_ids is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="already_marked",
+                )
+            already_marked = [single_id]
+            to_mark = []
+        else:
+            already_marked = []
+            to_mark = [single_id]
+    else:
+        # Bulk queries
+        students_res = await db.execute(
+            select(User.id).where(
+                User.id.in_(target_ids),
+                User.tenant_id == faculty.tenant_id,
+                User.role == "student",
+            )
+        )
+        found_students = set(students_res.scalars().all())
+        if len(found_students) != len(target_ids):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more students not found",
+            )
+
+        enrollments_res = await db.execute(
+            select(ClassEnrollment.student_id).where(
+                ClassEnrollment.course_id == session.course_id,
+                ClassEnrollment.student_id.in_(target_ids),
+                ClassEnrollment.tenant_id == faculty.tenant_id,
+                ClassEnrollment.active.is_(True),
+            )
+        )
+        enrolled_ids = set(enrollments_res.scalars().all())
+        if len(enrolled_ids) != len(target_ids):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more students not found in class",
+            )
+
+        existing_logs_res = await db.execute(
+            select(AttendanceLog.student_id).where(
+                AttendanceLog.session_id == session.id,
+                AttendanceLog.student_id.in_(target_ids),
+            )
+        )
+        already_marked_set = set(existing_logs_res.scalars().all())
+        already_marked = [sid for sid in target_ids if sid in already_marked_set]
+        to_mark = [sid for sid in target_ids if sid not in already_marked_set]
 
     now = datetime.now(timezone.utc)
-    log = AttendanceLog(
-        tenant_id=faculty.tenant_id,
-        session_id=session.id,
-        student_id=student.id,
-        marked_at=now,
-        source="override",
-        ip="faculty_override",
-        match_distance=None,
-        challenge=None,
-    )
-    db.add(log)
-    await db.commit()
-    await db.refresh(log)
+    newly_marked: list[int] = []
+
+    # 5. Insert AttendanceLog, Override, and AuditEvent in one atomic transaction
+    for sid in to_mark:
+        log = AttendanceLog(
+            tenant_id=faculty.tenant_id,
+            session_id=session.id,
+            student_id=sid,
+            marked_at=now,
+            source="override",
+            ip="faculty_override",
+            match_distance=None,
+            challenge=None,
+        )
+        db.add(log)
+
+        override = Override(
+            tenant_id=faculty.tenant_id,
+            session_id=session.id,
+            student_id=sid,
+            actor_id=faculty.id,
+            reason=reason,
+            note=note,
+            created_at=now,
+        )
+        db.add(override)
+
+        audit = AuditEvent(
+            tenant_id=faculty.tenant_id,
+            actor_id=faculty.id,
+            action="attendance_override",
+            target=f"student:{sid}",
+            meta={"session_id": session.id, "reason": reason, "note": note},
+            created_at=now,
+        )
+        db.add(audit)
+        newly_marked.append(sid)
+
+    if newly_marked:
+        await db.commit()
 
     return OverrideAttendanceResponse(
         status="marked",
         session_id=session.id,
-        student_id=student.id,
-        marked_at=log.marked_at,
+        marked=newly_marked,
+        already_marked=already_marked,
+        marked_count=len(newly_marked),
+        already_marked_count=len(already_marked),
+        student_id=newly_marked[0] if newly_marked else (already_marked[0] if already_marked else None),
+        marked_at=now,
         source="override",
-        reason=body.reason,
+        reason=reason,
     )
 
 
@@ -260,7 +472,7 @@ async def _get_owned_session(
 ) -> AttendanceSession:
     """
     Load a session and confirm the requesting faculty owns it.
-    Raises 404 if not found, 403 if it belongs to another faculty member.
+    Raises 404 if not found or if it belongs to another faculty member (scoping §8).
     """
     result = await db.execute(
         select(AttendanceSession).where(
@@ -270,16 +482,11 @@ async def _get_owned_session(
     )
     session = result.scalar_one_or_none()
 
-    if session is None:
+    if session is None or session.faculty_id != faculty.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
 
-    if session.faculty_id != faculty.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to access this session",
-        )
-
     return session
+

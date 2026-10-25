@@ -106,16 +106,58 @@ class AttendanceResponse(BaseModel):
     student_id: int
 
 
+# ── Live Session & Headcount schemas ─────────────────────────────────────────
+
+class MarkedStudentEntry(BaseModel):
+    student_id: int
+    name: str
+    roll_no: str
+    marked_at: datetime
+    source: str
+    reason: str | None = None
+
+
+class NotMarkedStudentEntry(BaseModel):
+    student_id: int
+    name: str
+    roll_no: str
+
+
+class LiveAttendanceResponse(BaseModel):
+    session_id: int
+    class_name: str
+    course_name: str
+    session_status: str
+    status: str
+    total_in_class: int
+    marked_count: int
+    present_count: int
+    marked: list[MarkedStudentEntry] = Field(default_factory=list)
+    not_marked: list[NotMarkedStudentEntry] = Field(default_factory=list)
+    records: list[dict] = Field(default_factory=list)
+
+
+# ── Manual Override schemas ──────────────────────────────────────────────────
+
 class OverrideAttendanceRequest(BaseModel):
-    student_id: int = Field(gt=0)
-    reason: str = Field(min_length=3, max_length=500)
+    student_ids: list[int] | None = Field(default=None, max_length=50)
+    student_id: int | None = Field(default=None, gt=0)
+    reason: str = Field(min_length=1, max_length=500)
+    note: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class OverrideAttendanceResponse(BaseModel):
-    status: Literal["marked"] = "marked"
+    status: Literal["marked", "success"] = "marked"
     session_id: int
-    student_id: int
-    marked_at: datetime
+    marked: list[int] = Field(default_factory=list)
+    already_marked: list[int] = Field(default_factory=list)
+    marked_count: int = 0
+    already_marked_count: int = 0
+    student_id: int | None = None
+    marked_at: datetime | None = None
     source: Literal["override"] = "override"
     reason: str
+
 

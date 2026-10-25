@@ -6,6 +6,7 @@ from app.models.attendance_session import AttendanceSession
 from app.models.attendance_log import AttendanceLog
 from app.models.audit import AuditEvent
 from app.models.join_request import JoinRequest
+from app.models.override import Override
 
 __all__ = [
     "User",
@@ -16,4 +17,5 @@ __all__ = [
     "AttendanceLog",
     "AuditEvent",
     "JoinRequest",
+    "Override",
 ]

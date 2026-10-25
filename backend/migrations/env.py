@@ -17,6 +17,7 @@ from app.models import (
     AttendanceLog,
     AuditEvent,
     JoinRequest,
+    Override,
 )
 
 config = context.config

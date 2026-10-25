@@ -188,7 +188,7 @@ class TestEndSession:
         db.execute.return_value = result
 
         response = client.post("/sessions/1/end")
-        assert response.status_code == 403
+        assert response.status_code == 404
 
 
 # ── GET /sessions/{id}/qr ────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ class TestGetQR:
         assert response.status_code == 409
 
     def test_another_faculty_cannot_get_qr(self, faculty_client):
-        """Faculty B cannot read faculty A's QR (handbook §8.1 Roles)."""
+        """Faculty B cannot read faculty A's QR — out of scope returns 404."""
         client, db, faculty = faculty_client
         # Session owned by faculty 99, not current faculty (10)
         session = make_session(faculty_id=99)
@@ -231,10 +231,95 @@ class TestGetQR:
         db.execute.return_value = result
 
         response = client.get("/sessions/1/qr")
-        assert response.status_code == 403
+        assert response.status_code == 404
 
     def test_student_cannot_get_qr(self, student_client):
         """Student calling GET /sessions/{id}/qr gets 403."""
         client, db, _ = student_client
         response = client.get("/sessions/1/qr")
         assert response.status_code == 403
+
+
+# ── GET /sessions/{id}/live ──────────────────────────────────────────────────
+
+class TestLiveSession:
+    def test_owner_can_get_live_session_data_and_never_descriptors(self, faculty_client):
+        from datetime import datetime, timezone
+        from app.models.attendance_log import AttendanceLog
+
+        client, db, faculty = faculty_client
+        session = make_session(session_id=1, faculty_id=faculty.id, course_id=5)
+
+        course = Course(id=5, tenant_id=1, name="Operating Systems", code="CS301", semester="S1", faculty_id=faculty.id)
+        student1 = make_student(user_id=21)
+        student2 = make_student(user_id=22)
+
+        now = datetime.now(timezone.utc)
+        log1 = AttendanceLog(
+            id=1,
+            tenant_id=1,
+            session_id=1,
+            student_id=21,
+            marked_at=now,
+            source="scan",
+            match_distance=0.25,
+        )
+
+        mock_session = MagicMock()
+        mock_session.scalar_one_or_none.return_value = session
+
+        mock_course = MagicMock()
+        mock_course.scalar_one_or_none.return_value = course
+
+        mock_students = MagicMock()
+        mock_students.scalars.return_value.all.return_value = [student1, student2]
+
+        mock_logs = MagicMock()
+        mock_logs.scalars.return_value.all.return_value = [log1]
+
+        mock_overrides = MagicMock()
+        mock_overrides.scalars.return_value.all.return_value = []
+
+        db.execute.side_effect = [
+            mock_session,
+            mock_course,
+            mock_students,
+            mock_logs,
+            mock_overrides,
+        ]
+
+        response = client.get("/sessions/1/live")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["class_name"] == "Operating Systems"
+        assert data["total_in_class"] == 2
+        assert data["marked_count"] == 1
+        assert len(data["marked"]) == 1
+        assert data["marked"][0]["student_id"] == 21
+        assert len(data["not_marked"]) == 1
+        assert data["not_marked"][0]["student_id"] == 22
+
+        # STRICT PRIVACY: verify absolutely no descriptors or password hashes are leaked
+        raw_text = response.text.lower()
+        assert "descriptor" not in raw_text
+        assert "embedding" not in raw_text
+        assert "landmark" not in raw_text
+        assert "password" not in raw_text
+
+    def test_another_faculty_cannot_get_live_session(self, faculty_client):
+        client, db, faculty = faculty_client
+        session_other = make_session(faculty_id=99)
+
+        mock_session = MagicMock()
+        mock_session.scalar_one_or_none.return_value = session_other
+        db.execute.return_value = mock_session
+
+        response = client.get("/sessions/1/live")
+        assert response.status_code == 404
+
+    def test_student_cannot_get_live_session(self, student_client):
+        client, db, _ = student_client
+        response = client.get("/sessions/1/live")
+        assert response.status_code == 403
+
