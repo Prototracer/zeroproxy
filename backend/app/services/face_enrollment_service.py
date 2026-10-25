@@ -95,9 +95,18 @@ async def enroll_student(
 
     # Re-enrollment without a reset is rejected (handbook §1 & §8.1)
     if student.status != "pending":
-        raise EnrollmentDataError(
-            "Student is already active. Re-enrollment requires a reset."
+        existing_vec = await db.execute(
+            select(FaceVector.id).where(
+                FaceVector.user_id == student.id,
+                FaceVector.tenant_id == tenant_id,
+                FaceVector.active.is_(True),
+            )
         )
+        if existing_vec.scalar_one_or_none() is not None:
+            raise EnrollmentDataError(
+                "Student is already active. Re-enrollment requires a reset."
+            )
+
 
     try:
         # Compare against every other student's active enrollment.
