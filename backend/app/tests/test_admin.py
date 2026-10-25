@@ -128,3 +128,234 @@ def test_admin_can_view_override_reports(admin_client):
     assert len(data) == 1
     assert data[0]["faculty_name"] == "Prof Smith"
     assert data[0]["override_count"] == 3
+
+
+def test_admin_can_list_users_and_never_passwords(admin_client):
+    test_client, db, admin = admin_client
+
+    user1 = User(
+        id=1,
+        tenant_id=1,
+        roll_no="STU001",
+        email="stu1@example.com",
+        name="Student One",
+        password_hash="secret_hash_value",
+        role="student",
+        status="active",
+    )
+
+    mock_count = MagicMock()
+    mock_count.scalar_one.return_value = 1
+
+    mock_users = MagicMock()
+    mock_users.scalars.return_value.all.return_value = [user1]
+
+    mock_face_ids = MagicMock()
+    mock_face_ids.scalars.return_value.all.return_value = [1]
+
+    db.execute.side_effect = [mock_count, mock_users, mock_face_ids]
+
+    response = test_client.get("/admin/users?role=student")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert len(data["users"]) == 1
+    assert data["users"][0]["name"] == "Student One"
+    assert data["users"][0]["has_face_vector"] is True
+
+    # Critical security assertion: passwords and hashes never leaked
+    raw_text = response.text.lower()
+    assert "password_hash" not in raw_text
+    assert "secret_hash_value" not in raw_text
+
+
+def test_admin_can_create_faculty_account(admin_client):
+    test_client, db, admin = admin_client
+
+    mock_existing = MagicMock()
+    mock_existing.scalar_one_or_none.return_value = None  # no duplicate
+
+    db.execute.return_value = mock_existing
+
+    from datetime import datetime, timezone
+    def _fake_refresh(obj):
+        obj.id = 50
+        obj.created_at = datetime.now(timezone.utc)
+    db.refresh.side_effect = _fake_refresh
+
+    response = test_client.post(
+        "/admin/faculty",
+        json={
+            "name": "Dr. Alan Turing",
+            "email": "turing@university.edu",
+            "roll_no": "FAC042",
+            "password": "InitialTempPassword123!",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["role"] == "faculty"
+    assert data["must_change_password"] is True
+    assert data["name"] == "Dr. Alan Turing"
+    db.commit.assert_awaited()
+
+
+def test_create_faculty_rejects_duplicate(admin_client):
+    test_client, db, admin = admin_client
+
+    mock_existing = MagicMock()
+    mock_existing.scalar_one_or_none.return_value = User(id=5, tenant_id=1, roll_no="FAC042", email="turing@university.edu", name="Existing", password_hash="h", role="faculty", status="active")
+
+    db.execute.return_value = mock_existing
+
+    response = test_client.post(
+        "/admin/faculty",
+        json={
+            "name": "Dr. Alan Turing",
+            "email": "turing@university.edu",
+            "roll_no": "FAC042",
+            "password": "InitialTempPassword123!",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_admin_can_update_user_status_and_suspend(admin_client):
+    test_client, db, admin = admin_client
+
+    user = User(
+        id=20,
+        tenant_id=1,
+        roll_no="STU001",
+        email="stu1@example.com",
+        name="Student One",
+        password_hash="h",
+        role="student",
+        status="active",
+    )
+
+    mock_user = MagicMock()
+    mock_user.scalar_one_or_none.return_value = user
+    db.execute.return_value = mock_user
+
+    response = test_client.post(
+        "/admin/users/20/status",
+        json={"status": "suspended"},
+    )
+
+    assert response.status_code == 200
+    assert user.status == "suspended"
+    db.commit.assert_awaited()
+
+
+def test_admin_cannot_suspend_themselves(admin_client):
+    test_client, db, admin = admin_client
+
+    # admin.id is 99
+    response = test_client.post(
+        "/admin/users/99/status",
+        json={"status": "suspended"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_admin_can_reset_password(admin_client):
+    test_client, db, admin = admin_client
+
+    user = User(
+        id=20,
+        tenant_id=1,
+        roll_no="STU001",
+        email="stu1@example.com",
+        name="Student One",
+        password_hash="old_hash",
+        role="student",
+        status="active",
+    )
+
+    mock_user = MagicMock()
+    mock_user.scalar_one_or_none.return_value = user
+    db.execute.return_value = mock_user
+
+    response = test_client.post(
+        "/admin/users/20/reset-password",
+        json={"temporary_password": "NewTempPassword999!"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["must_change_password"] is True
+    assert data["temporary_password"] == "NewTempPassword999!"
+    assert user.must_change_password is True
+    assert user.password_hash != "old_hash"
+
+
+def test_admin_can_reset_student_face_enrollment(admin_client):
+    test_client, db, admin = admin_client
+
+    student = User(
+        id=20,
+        tenant_id=1,
+        roll_no="STU001",
+        email="student@example.com",
+        name="Student One",
+        password_hash="h",
+        role="student",
+        status="active",
+    )
+
+    vector = FaceVector(
+        id=1,
+        tenant_id=1,
+        user_id=20,
+        descriptor_enc=b"enc",
+        version=1,
+        active=True,
+    )
+
+    mock_student = MagicMock()
+    mock_student.scalar_one_or_none.return_value = student
+
+    mock_vectors = MagicMock()
+    mock_vectors.scalars.return_value.all.return_value = [vector]
+
+    db.execute.side_effect = [mock_student, mock_vectors]
+
+    response = test_client.post("/admin/users/20/reset-face")
+
+    assert response.status_code == 200
+    assert student.status == "pending"
+    assert vector.active is False
+    db.commit.assert_awaited()
+
+
+def test_admin_can_view_audit_logs(admin_client):
+    from app.models.audit import AuditEvent
+    from datetime import datetime, timezone
+
+    test_client, db, admin = admin_client
+
+    event = AuditEvent(
+        id=1,
+        tenant_id=1,
+        actor_id=admin.id,
+        action="faculty_created",
+        target="user:50",
+        meta={"name": "Dr. Turing"},
+        created_at=datetime.now(timezone.utc),
+    )
+
+    mock_res = MagicMock()
+    mock_res.all.return_value = [(event, "Admin User", "admin@example.com")]
+    db.execute.return_value = mock_res
+
+    response = test_client.get("/admin/audit")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["action"] == "faculty_created"
+    assert data[0]["actor_name"] == "Admin User"
+

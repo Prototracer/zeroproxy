@@ -73,6 +73,14 @@ class MemoryRefreshTokenStore:
             del self._active_tokens[jti]
             return True
 
+    def revoke_all_for_user(self, user_id: int) -> int:
+        with self._lock:
+            to_del = [jti for jti, (uid, _) in self._active_tokens.items() if uid == user_id]
+            for jti in to_del:
+                del self._active_tokens[jti]
+            return len(to_del)
+
+
 
 # ── Scan-ticket store ────────────────────────────────────────────────────────
 
