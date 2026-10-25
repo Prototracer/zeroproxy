@@ -19,4 +19,12 @@ class User(Base):
     must_change_password: Mapped[bool]=mapped_column(Boolean,default=False,nullable=False)
     created_at: Mapped[datetime]=mapped_column(
         DateTime(timezone=True),server_default=func.now(),nullable=False)
+
+    @property
+    def full_name(self) -> str:
+        return self.name
+
+    @full_name.setter
+    def full_name(self, value: str) -> None:
+        self.name = value
     

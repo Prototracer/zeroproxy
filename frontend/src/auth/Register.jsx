@@ -6,11 +6,11 @@ import { apiRequest } from '../api/client.js';
 function Register() {
   const navigate = useNavigate();
 
-  const [name, setName] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [rollNo, setRollNo] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState('student');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -22,13 +22,13 @@ function Register() {
     setMessage('');
     setSuccess(false);
 
-    if (!name.trim() || !email.trim() || !password || !confirmPassword) {
+    if (!fullName.trim() || !rollNo.trim() || !email.trim() || !password || !confirmPassword) {
       setMessage('Please fill in all fields.');
       return;
     }
 
-    if (password.length < 8) {
-      setMessage('Password must contain at least 8 characters.');
+    if (password.length < 10) {
+      setMessage('Password must contain at least 10 characters.');
       return;
     }
 
@@ -43,10 +43,10 @@ function Register() {
       await apiRequest('/auth/register', {
         method: 'POST',
         body: JSON.stringify({
-          name: name.trim(),
+          full_name: fullName.trim(),
+          roll_no: rollNo.trim().toUpperCase(),
           email: email.trim(),
           password,
-          role,
         }),
       });
 
@@ -79,11 +79,11 @@ function Register() {
 
       setSuccess(true);
       setMessage('Registration successful! You can now log in to complete your face enrollment.');
-      setName('');
+      setFullName('');
+      setRollNo('');
       setEmail('');
       setPassword('');
       setConfirmPassword('');
-      setRole('student');
       setShowPassword(false);
       setShowConfirmPassword(false);
       setTimeout(() => {
@@ -262,9 +262,9 @@ function Register() {
                 id="register-name"
                 type="text"
                 placeholder="Enter your full name"
-                value={name}
+                value={fullName}
                 onChange={(event) => {
-                  setName(event.target.value);
+                  setFullName(event.target.value);
                   setMessage('');
                   setSuccess(false);
                 }}
@@ -276,12 +276,35 @@ function Register() {
             </div>
 
             <div style={fieldStyle}>
-              <label htmlFor="register-email" style={labelStyle}>Email Address</label>
+              <label htmlFor="register-roll" style={labelStyle}>Roll Number</label>
+              <input
+                className="glass-hover"
+                id="register-roll"
+                type="text"
+                placeholder="e.g. 24BCS101"
+                value={rollNo}
+                onChange={(event) => {
+                  setRollNo(event.target.value);
+                  setMessage('');
+                  setSuccess(false);
+                }}
+                autoComplete="off"
+                maxLength={30}
+                required
+                style={{ ...inputStyle, textTransform: 'uppercase' }}
+              />
+              <span style={{ display: 'block', marginTop: '6px', fontSize: '12px', color: '#8be4ff' }}>
+                Your college roll number. It cannot be changed later.
+              </span>
+            </div>
+
+            <div style={fieldStyle}>
+              <label htmlFor="register-email" style={labelStyle}>Institute Email Address</label>
               <input
                 className="glass-hover"
                 id="register-email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder="you@univ.edu"
                 value={email}
                 onChange={(event) => {
                   setEmail(event.target.value);
@@ -301,7 +324,7 @@ function Register() {
                   className="glass-hover"
                   id="register-password"
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="At least 8 characters"
+                  placeholder="At least 10 characters"
                   value={password}
                   onChange={(event) => {
                     setPassword(event.target.value);
@@ -309,7 +332,7 @@ function Register() {
                     setSuccess(false);
                   }}
                   autoComplete="new-password"
-                  minLength={8}
+                  minLength={10}
                   required
                   style={{ ...inputStyle, paddingRight: '65px' }}
                 />
@@ -335,7 +358,7 @@ function Register() {
               </div>
             </div>
 
-            <div style={fieldStyle}>
+            <div style={{ ...fieldStyle, marginBottom: '24px' }}>
               <label htmlFor="register-confirm-password" style={labelStyle}>
                 Confirm Password
               </label>
@@ -352,7 +375,7 @@ function Register() {
                     setSuccess(false);
                   }}
                   autoComplete="new-password"
-                  minLength={8}
+                  minLength={10}
                   required
                   style={{ ...inputStyle, paddingRight: '65px' }}
                 />
@@ -381,54 +404,6 @@ function Register() {
                 </button>
               </div>
             </div>
-
-            <fieldset style={{ border: 'none', padding: 0, margin: '4px 0 22px' }}>
-              <legend style={{ ...labelStyle, marginBottom: '10px' }}>
-                Register As
-              </legend>
-
-              <div style={{ display: 'flex', gap: '12px' }}>
-                {[
-                  { value: 'student', title: 'Student', icon: '♧' },
-                  { value: 'faculty', title: 'Faculty', icon: '♙' },
-                ].map((item) => (
-                  <label
-                    key={item.value}
-                    className="role-card"
-                    style={roleCardStyle(role === item.value)}
-                  >
-                    <input
-                      type="radio"
-                      name="role"
-                      value={item.value}
-                      checked={role === item.value}
-                      onChange={(event) => {
-                        setRole(event.target.value);
-                        setMessage('');
-                        setSuccess(false);
-                      }}
-                      style={{
-                        position: 'absolute',
-                        opacity: 0,
-                        width: '1px',
-                        height: '1px',
-                      }}
-                    />
-                    <span style={{ display: 'block', fontSize: '25px', color: '#6de2ff', marginBottom: '8px' }}>
-                      {item.icon}
-                    </span>
-                    <span style={{ display: 'block', fontSize: '13px', fontWeight: 650 }}>
-                      {item.title}
-                    </span>
-                    {role === item.value && (
-                      <span style={{ display: 'block', marginTop: '6px', fontSize: '10px', color: '#6de2ff' }}>
-                        SELECTED
-                      </span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
 
             <button
               className="glass-login-button"

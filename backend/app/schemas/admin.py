@@ -18,12 +18,20 @@ class ResetUserPasswordRequest(BaseModel):
     temporary_password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
+class CorrectUserDetailsRequest(BaseModel):
+    full_name: str | None = Field(default=None, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    roll_no: str | None = Field(default=None, max_length=50)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class AdminUserListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     roll_no: str
     name: str
+    full_name: str | None = None
     email: str
     role: str
     status: str

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from fastapi import (
     APIRouter,
@@ -8,11 +9,15 @@ from fastapi import (
     status,
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import REFRESH_TOKEN_EXPIRE_DAYS
+from app.config import (
+    ALLOWED_EMAIL_DOMAIN,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    ROLL_NO_PATTERN,
+)
 from app.core.deps import (
     bearer_scheme,
     get_current_user,
@@ -57,17 +62,23 @@ class MemoryTokenDenylist:
         return True
 
 
-router=APIRouter(prefix="/auth",tags=["Authentication"])
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+GENERIC_REGISTER_ERROR = (
+    "Could not register with those details. If you already have an account, log in or contact your faculty."
+)
+
 
 @router.get("/me")
 async def get_me(
-    current_user: User=Depends(get_current_user)
-    ):
+    current_user: User = Depends(get_current_user)
+):
     return {
-        "id":current_user.id,
-        "name":current_user.name,
-        "email":current_user.email,
-        "roll_no":current_user.roll_no,
+        "id": current_user.id,
+        "name": current_user.name,
+        "full_name": current_user.name,
+        "email": current_user.email,
+        "roll_no": current_user.roll_no,
         "role": current_user.role,
         "status": current_user.status,
         "must_change_password": current_user.must_change_password,
@@ -115,45 +126,72 @@ async def logout(
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("5/minute")
 async def register(
-    request: RegisterRequest,
+    request: Request,
+    body: RegisterRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    if is_common_password(request.password):
+    # 1. Full name validation
+    full_name = (body.full_name or body.name or "").strip()
+    if len(full_name) < 2 or len(full_name) > 255:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This password is too common. Please choose a stronger password."
+            detail="Full name must be between 2 and 255 characters",
         )
-    
-    result = await db.execute(
-        select(User).where(User.email == request.email)
+
+    # 2. Roll number validation
+    roll_no = (body.roll_no or "").strip().upper()
+    if not roll_no or not re.match(ROLL_NO_PATTERN, roll_no):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Roll number must be 3 to 30 characters from [A-Z0-9-_/]",
+        )
+
+    # 3. Password validation: >= 10 chars and not common
+    if len(body.password) < 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 10 characters long",
+        )
+    if is_common_password(body.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This password is too common. Please choose a stronger password.",
+        )
+
+    # 4. Email domain check
+    email = body.email.strip().lower()
+    if ALLOWED_EMAIL_DOMAIN:
+        allowed_domains = [d.strip().lower() for d in ALLOWED_EMAIL_DOMAIN.split(",") if d.strip()]
+        email_domain = email.split("@")[-1] if "@" in email else ""
+        if allowed_domains and email_domain not in allowed_domains:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Email must belong to an approved institute domain: {', '.join(allowed_domains)}",
+            )
+
+    # 5. Duplicate check with single generic error message
+    existing = await db.execute(
+        select(User.id).where(
+            or_(
+                func.lower(User.email) == email,
+                func.lower(User.roll_no) == roll_no.lower(),
+            )
+        )
     )
-    if result.scalar_one_or_none():
+    if existing.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email is already registered",
+            detail=GENERIC_REGISTER_ERROR,
         )
 
-    roll_no = (
-        request.roll_no.strip()
-        if request.roll_no and request.roll_no.strip()
-        else request.email.split("@")[0].upper()
-    )
-
-    result = await db.execute(
-        select(User).where(User.roll_no == roll_no)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Roll number is already registered",
-        )
-
+    # 6. Always student role, pending status, ignores client role
     user = User(
-        name=request.name,
-        email=request.email,
+        name=full_name,
+        email=email,
         roll_no=roll_no,
-        password_hash=hash_password(request.password),
+        password_hash=hash_password(body.password),
         role="student",
         status="pending",
         tenant_id=1,
@@ -169,7 +207,7 @@ async def register(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email or roll number is already registered",
+            detail=GENERIC_REGISTER_ERROR,
         )
 
     return user

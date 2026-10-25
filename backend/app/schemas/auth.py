@@ -1,16 +1,18 @@
 from pydantic import BaseModel,EmailStr,Field,ConfigDict
 
 class RegisterRequest(BaseModel):
-    name: str = Field(min_length=2, max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
     email: EmailStr
-    roll_no: str = Field(default="", max_length=50)
-    password: str = Field(min_length=8, max_length=128)
+    roll_no: str = Field(max_length=50)
+    password: str = Field(min_length=10, max_length=128)
     role: str | None = Field(default=None)
 
 class UserResponse(BaseModel):
     model_config=ConfigDict(from_attributes=True)
     id: int
     name: str
+    full_name: str | None = None
     roll_no: str
     email: EmailStr
     role: str

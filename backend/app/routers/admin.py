@@ -3,12 +3,14 @@ Admin and Reports router — User management, faculty creation, DPDP compliance,
 and audit reports (Handbook §7 & §8).
 """
 
+import re
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import ROLL_NO_PATTERN
 from app.core.deps import require_role
 from app.core.security import hash_password
 from app.db import get_db
@@ -21,6 +23,7 @@ from app.schemas.admin import (
     AdminUserListItem,
     AdminUserListResponse,
     AuditEventResponse,
+    CorrectUserDetailsRequest,
     CreateFacultyRequest,
     ResetUserPasswordRequest,
     UpdateUserStatusRequest,
@@ -214,6 +217,119 @@ async def update_user_status(
         "status": user.status,
         "message": f"User status updated from {old_status} to {user.status}",
     }
+
+
+# ── PATCH /admin/users/{user_id} ──────────────────────────────────────────
+
+@router.patch("/admin/users/{user_id}", response_model=AdminUserListItem, status_code=status.HTTP_200_OK)
+async def correct_user_details(
+    user_id: int,
+    body: CorrectUserDetailsRequest,
+    admin: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin only: Correct full_name or roll_no for a user.
+    Reason is strictly required and the action is audit logged.
+    """
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A valid reason is required for correcting user details.",
+        )
+
+    user_res = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.tenant_id == admin.tenant_id,
+        )
+    )
+    user = user_res.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    old_name = user.name
+    old_roll_no = user.roll_no
+    changes_made = {}
+
+    new_name = (body.full_name or body.name or "").strip()
+    if new_name and new_name != old_name:
+        if len(new_name) < 2 or len(new_name) > 255:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Full name must be between 2 and 255 characters",
+            )
+        user.name = new_name
+        changes_made["name"] = {"from": old_name, "to": new_name}
+
+    if body.roll_no is not None:
+        new_roll = body.roll_no.strip().upper()
+        if new_roll and new_roll != old_roll_no:
+            if not re.match(ROLL_NO_PATTERN, new_roll):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Roll number must be 3 to 30 characters from [A-Z0-9-_/]",
+                )
+            # Check case-insensitive uniqueness across other users
+            existing = await db.execute(
+                select(User.id).where(
+                    func.lower(User.roll_no) == new_roll.lower(),
+                    User.id != user.id,
+                )
+            )
+            if existing.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Roll number is already in use by another user",
+                )
+            user.roll_no = new_roll
+            changes_made["roll_no"] = {"from": old_roll_no, "to": new_roll}
+
+    if not changes_made:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No changes detected in provided full_name or roll_no",
+        )
+
+    audit = AuditEvent(
+        tenant_id=admin.tenant_id,
+        actor_id=admin.id,
+        action="user_details_corrected",
+        target=f"user:{user.id}",
+        meta={
+            "reason": body.reason.strip(),
+            "changes": changes_made,
+        },
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(user)
+
+    face_res = await db.execute(
+        select(FaceVector.id).where(
+            FaceVector.user_id == user.id,
+            FaceVector.tenant_id == admin.tenant_id,
+            FaceVector.active.is_(True),
+        ).limit(1)
+    )
+    has_face = face_res.scalar_one_or_none() is not None
+
+    return AdminUserListItem(
+        id=user.id,
+        roll_no=user.roll_no,
+        name=user.name,
+        full_name=user.name,
+        email=user.email,
+        role=user.role,
+        status=user.status,
+        must_change_password=bool(user.must_change_password) if user.must_change_password is not None else False,
+        has_face_vector=has_face,
+        created_at=user.created_at,
+    )
+
 
 
 # ── POST /admin/users/{user_id}/reset-password ──────────────────────────────

@@ -28,6 +28,10 @@ CAMPUS_CIDRS = [
     if cidr.strip()
 ]
 
+# Registration configuration
+ROLL_NO_PATTERN = os.getenv("ROLL_NO_PATTERN", r"^[A-Z0-9_\-\/]{3,30}$")
+ALLOWED_EMAIL_DOMAIN = os.getenv("ALLOWED_EMAIL_DOMAIN", "")
+
 
 def validate_settings():
     required = {

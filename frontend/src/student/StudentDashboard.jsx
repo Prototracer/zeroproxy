@@ -354,6 +354,23 @@ function StudentDashboard() {
 
           <button
             type="button"
+            onClick={() => navigate("/student/profile")}
+            style={{
+              padding: "11px 18px",
+              borderRadius: "10px",
+              border: "1px solid rgba(103, 232, 249, 0.4)",
+              background: "rgba(103, 232, 249, 0.08)",
+              color: "#67e8f9",
+              cursor: "pointer",
+              fontSize: "14px",
+              fontWeight: 500,
+            }}
+          >
+            👤 My Profile
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               sessionStorage.clear();
               navigate("/login", { replace: true });

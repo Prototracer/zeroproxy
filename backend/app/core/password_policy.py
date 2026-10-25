@@ -1,13 +1,21 @@
-
 COMMON_PASSWORDS = {
     "password",
     "password123",
+    "password1234",
+    "password12345",
     "12345678",
     "123456789",
+    "1234567890",
     "qwerty123",
+    "qwerty1234",
     "admin123",
-    "letmein",
+    "admin1234",
+    "admin12345",
+    "letmein123",
     "welcome123",
+    "welcome1234",
+    "changeme123",
+    "iloveyou123",
 }
 
 

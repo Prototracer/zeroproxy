@@ -359,3 +359,64 @@ def test_admin_can_view_audit_logs(admin_client):
     assert data[0]["action"] == "faculty_created"
     assert data[0]["actor_name"] == "Admin User"
 
+
+def test_admin_can_correct_user_details(admin_client):
+    test_client, db, admin = admin_client
+
+    target_user = User(
+        id=15,
+        tenant_id=1,
+        roll_no="25BCS015",
+        email="old_email@example.com",
+        name="Old Name",
+        password_hash="hashed",
+        role="student",
+        status="active",
+    )
+
+    mock_target = MagicMock()
+    mock_target.scalar_one_or_none.return_value = target_user
+
+    # for duplicate check: None means no conflicting roll_no
+    mock_dup = MagicMock()
+    mock_dup.scalar_one_or_none.return_value = None
+
+    # for face vector check
+    mock_face = MagicMock()
+    mock_face.scalar_one_or_none.return_value = None
+
+    db.execute.side_effect = [mock_target, mock_dup, mock_face]
+
+    response = test_client.patch(
+        "/admin/users/15",
+        json={
+            "full_name": "Corrected Name",
+            "roll_no": "25BCS999",
+            "reason": "Typo during registration attested by student office",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["full_name"] == "Corrected Name"
+    assert data["roll_no"] == "25BCS999"
+    assert target_user.name == "Corrected Name"
+    assert target_user.roll_no == "25BCS999"
+    db.commit.assert_awaited()
+
+
+def test_admin_correct_user_details_requires_reason(admin_client):
+    test_client, db, admin = admin_client
+
+    response = test_client.patch(
+        "/admin/users/15",
+        json={
+            "full_name": "New Name",
+            "reason": "   ",  # whitespace only
+        },
+    )
+
+    assert response.status_code == 400
+
+
+
