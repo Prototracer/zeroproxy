@@ -5,7 +5,7 @@
  */
 
 const activeStreams = new Set();
-const allowedPrefixes = ['/student/scan', '/student/enroll', '/camera-test'];
+const allowedPrefixes = ['/student/scan', '/student/enroll', '/camera-test', '/admin', '/dev'];
 
 /**
  * Returns true only if the given pathname is an authorized camera page.

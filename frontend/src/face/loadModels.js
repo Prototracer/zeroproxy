@@ -1,4 +1,4 @@
-import * as faceapi from '@vladmandic/face-api'
+import * as faceapi from '@vladmandic/face-api/dist/face-api.esm.js';
 
 // ─── Singleton State ─────────────────────────────────────────────────────────
 // These two variables live at module scope, meaning they persist for the entire

@@ -107,3 +107,67 @@ def test_get_student_attendance_summary(student_client):
     assert data["attendance_percentage"] == 10.0
     assert len(data["records"]) == 1
     assert data["records"][0]["subject"] == "Algorithms"
+
+
+def test_liveness_nod_detection():
+    from app.routers.attendance import _detect_nod, _verify_liveness_challenge
+    from app.schemas.attendance import LandmarkEntry
+
+    # Simulating a natural downward nod from baseline ~1.5° up to 5.2° and back
+    pitches = [1.5, 1.6, 1.4, 2.0, 3.8, 5.2, 4.6, 2.2, 1.5]
+    series = [
+        LandmarkEntry(
+            t_ms=i * 66,
+            leftEye=0.28,
+            rightEye=0.28,
+            mouthRatio=0.1,
+            yawDeg=0.0,
+            pitchDeg=p,
+            tiltDeg=0.0,
+            faceCount=1,
+        )
+        for i, p in enumerate(pitches)
+    ]
+
+    assert _detect_nod(series) is True
+    assert _verify_liveness_challenge("nod_head", series) is True
+
+
+def test_liveness_blink_detection():
+    from app.routers.attendance import _detect_blink, _verify_liveness_challenge
+    from app.schemas.attendance import LandmarkEntry
+
+    # Simulating a natural mobile blink: 0.28 -> 0.19 -> 0.28
+    ears = [0.28, 0.28, 0.27, 0.19, 0.28, 0.28]
+    series = [
+        LandmarkEntry(
+            t_ms=i * 66,
+            leftEye=e,
+            rightEye=e,
+            mouthRatio=0.1,
+            yawDeg=0.0,
+            pitchDeg=1.0,
+            tiltDeg=0.0,
+            faceCount=1,
+        )
+        for i, e in enumerate(ears)
+    ]
+
+    assert _detect_blink(series) is True
+    assert _verify_liveness_challenge("blink", series) is True
+
+
+def test_challenge_pool_balanced_away_from_blink():
+    from app.routers.attendance import CHALLENGE_POOL
+
+    assert "blink" in CHALLENGE_POOL
+    blink_count = CHALLENGE_POOL.count("blink")
+    total_count = len(CHALLENGE_POOL)
+
+    # Blink must NOT dominate (should be <= 20% of challenges, e.g. ~11%)
+    assert (blink_count / total_count) <= 0.20
+    assert "nod_head" in CHALLENGE_POOL
+    assert "tilt_head" in CHALLENGE_POOL
+    assert "turn_left" in CHALLENGE_POOL
+    assert "turn_right" in CHALLENGE_POOL
+

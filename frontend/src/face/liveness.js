@@ -1,16 +1,101 @@
 import { faceapi, areModelsLoaded } from './loadModels.js';
 
-// TinyFaceDetector options for real-time mobile/browser tracking
-const DETECTOR_OPTIONS = new faceapi.TinyFaceDetectorOptions({
-  inputSize: 320,
-  scoreThreshold: 0.5,
-});
+// ─── LIVENESS CONFIGURATION OBJECT ───────────────────────────────────────────
+// Centralized config for thresholds, timing, and user-facing text.
+// All detection thresholds are marked as guesses to be calibrated against real traces.
+export const LIVENESS_CONFIG = {
+  // Detector parameters
+  detector: {
+    inputSize: 416,       // 416 gives higher landmark precision than 320 on mobile
+    scoreThreshold: 0.4,  // Confidence floor for face presence
+  },
 
-function dist(p1, p2) {
+  // Blink parameters (marked as guesses, to be tuned)
+  blink: {
+    ROLLING_WINDOW_MS: 1200, // Duration of rolling history for baseline computation
+    BASELINE_PERCENTILE: 0.80, // 80th percentile of smoothed EAR over window
+    MIN_BASELINE_EAR: 0.24,  // Floor for reference baseline (prevents divide by zero & depression)
+    SMOOTHING_FRAMES: 2,     // Moving average filter over 2 frames (fast mobile responsiveness)
+    CLOSE_RATIO: 0.86,       // Smoothed / reference <= 0.86 triggers CLOSED
+    OPEN_RATIO: 0.92,        // Smoothed / reference >= 0.92 triggers recovery to OPEN
+    MAX_CLOSED_MS: 1600,     // A closure > 1600ms is considered resting or eyes closed, not a blink
+    MIN_CLOSED_MS: 30,       // Minimum closed duration (captures 1 frame at 15-25fps)
+  },
+
+  // Turn parameters (to be re-tuned in Phase 4 from recorded traces)
+  turn: {
+    EXCURSION_DEG: 10.0,
+    RECOVERY_DEG: 8.0,
+  },
+
+  // Tilt parameters (roll toward shoulder)
+  tilt: {
+    EXCURSION_DEG: 7.5,
+    RECOVERY_DEG: 4.5,
+  },
+
+  // Nod parameters (pitch downward)
+  nod: {
+    EXCURSION_DEG: 3.5,
+    RECOVERY_DEG: 2.2,
+  },
+
+  // Timing & Series constraints
+  timing: {
+    MAX_DURATION_MS: 6500,
+    MIN_SUBMIT_MS: 1850,
+    DESIRED_SAMPLES: 2,
+    SAMPLE_INTERVAL_MS: 350,
+    SAMPLE_RATE_HZ: 15, // Rate to sample landmarkSeries (every ~66ms) to prevent 80-entry overflow
+  },
+
+  // User-facing prompts & instructions
+  prompts: {
+    blink: {
+      title: 'Blink Challenge',
+      instruction: 'Close your eyes gently for a moment, then open them',
+      icon: '👁️',
+      success: '✓ Blink verified! Finalizing...',
+      failure: 'Blink was not detected in time. Please close your eyes gently and open them.',
+    },
+    tilt_head: {
+      title: 'Head Tilt Challenge',
+      instruction: 'Tilt your head slightly toward either shoulder, then straighten',
+      icon: '🔄',
+      success: '✓ Head tilt verified! Finalizing...',
+      failure: 'Head tilt was not detected in time.',
+    },
+    nod_head: {
+      title: 'Head Nod Challenge',
+      instruction: 'Nod your head gently downward and back',
+      icon: '↕️',
+      success: '✓ Head nod verified! Finalizing...',
+      failure: 'Head nod was not detected in time.',
+    },
+    turn_left: {
+      title: 'Head Turn Left Challenge',
+      instruction: 'Turn your head slightly to the LEFT and back',
+      icon: '👈',
+      success: '✓ Left turn verified! Finalizing...',
+      failure: 'Head turn left was not detected in time.',
+    },
+    turn_right: {
+      title: 'Head Turn Right Challenge',
+      instruction: 'Turn your head slightly to the RIGHT and back',
+      icon: '👉',
+      success: '✓ Right turn verified! Finalizing...',
+      failure: 'Head turn right was not detected in time.',
+    },
+  },
+};
+
+// ─── PURE GEOMETRIC MATH UTILITIES ───────────────────────────────────────────
+
+export function dist(p1, p2) {
   return Math.hypot(p1.x - p2.x, p1.y - p2.y);
 }
 
-function computeEyeOpenness(eyePoints) {
+export function computeEyeOpenness(eyePoints) {
   if (!eyePoints || eyePoints.length < 6) return 0.28;
   const v1 = dist(eyePoints[1], eyePoints[5]);
   const v2 = dist(eyePoints[2], eyePoints[4]);
@@ -19,7 +104,7 @@ function computeEyeOpenness(eyePoints) {
   return (v1 + v2) / (2.0 * h);
 }
 
-function computeMouthRatio(mouthPoints) {
+export function computeMouthRatio(mouthPoints) {
   if (!mouthPoints || mouthPoints.length < 12) return 0.1;
   const vertical = dist(mouthPoints[13] || mouthPoints[3], mouthPoints[19] || mouthPoints[9]);
   const horizontal = dist(mouthPoints[0], mouthPoints[6]);
@@ -27,13 +112,14 @@ function computeMouthRatio(mouthPoints) {
   return vertical / horizontal;
 }
 
-function computeYawDeg(landmarks) {
+export function computeYawDeg(landmarks) {
   try {
     const nose = landmarks.getNose()[3];
     const leftCheek = landmarks.getJawOutline()[0];
     const rightCheek = landmarks.getJawOutline()[16];
     const dLeft = dist(nose, leftCheek);
     const dRight = dist(nose, rightCheek);
+    if (dLeft + dRight === 0) return 0;
     const diff = (dLeft - dRight) / (dLeft + dRight);
     return diff * 45; // between -45 and +45
   } catch {
@@ -41,22 +127,40 @@ function computeYawDeg(landmarks) {
   }
 }
 
-function computePitchDeg(landmarks) {
+export function computePitchDeg(landmarks) {
   try {
-    const noseTop = landmarks.getNose()[0];
+    const leftEye = landmarks.getLeftEye()[0];
+    const rightEye = landmarks.getRightEye()[3];
+    const eyeMidY = (leftEye.y + rightEye.y) / 2;
     const noseTip = landmarks.getNose()[3];
     const chin = landmarks.getJawOutline()[8];
-    const upperLen = dist(noseTop, noseTip);
-    const lowerLen = dist(noseTip, chin);
-    if (upperLen === 0) return 0;
-    const ratio = lowerLen / upperLen;
-    return (ratio - 1.9) * 25;
+
+    const dUpperY = noseTip.y - eyeMidY;
+    const dLowerY = chin.y - noseTip.y;
+    if (dUpperY <= 0) return 0;
+
+    const ratio = dLowerY / dUpperY;
+    return Number(((1.4 - ratio) * 20).toFixed(1));
   } catch {
     return 0;
   }
 }
 
-function computeEyebrowRaise(landmarks) {
+export function computeTiltDeg(landmarks) {
+  try {
+    const leftEye = landmarks.getLeftEye()[0];
+    const rightEye = landmarks.getRightEye()[3];
+    const dy = rightEye.y - leftEye.y;
+    const dx = rightEye.x - leftEye.x;
+    if (dx === 0) return 0;
+    return Number(((Math.atan2(dy, dx) * 180) / Math.PI).toFixed(1));
+  } catch {
+    return 0;
+  }
+}
+
+
+export function computeEyebrowRaise(landmarks) {
   try {
     const leftBrow = landmarks.getLeftEyeBrow()[2];
     const leftEye = landmarks.getLeftEye()[1];
@@ -72,97 +176,147 @@ function computeEyebrowRaise(landmarks) {
   }
 }
 
-/**
- * Returns user-friendly instructions and structured multi-step information for a challenge.
- */
-export function getChallengeInfo(challengeCode) {
-  switch (challengeCode) {
-    case 'double_blink':
-      return {
-        title: 'Double Blink Challenge',
-        instruction: '👀 Please BLINK TWICE naturally',
-        icon: '👀',
-        isCombo: true,
-        step1Name: '1st Blink',
-        step2Name: '2nd Blink',
-        step1Instruction: 'Step 1 of 2: Please BLINK once naturally',
-        step2Instruction: 'Step 2 of 2: Now BLINK once more',
-      };
-    case 'turn_left':
-      return {
-        title: 'Head Turn Left Challenge',
-        instruction: '👈 Turn your head slightly to the LEFT and back',
-        icon: '👈',
-        isCombo: false,
-        step1Name: 'Turn Left',
-        step1Instruction: 'Turn your head slightly to the LEFT and back',
-      };
-    case 'turn_right':
-      return {
-        title: 'Head Turn Right Challenge',
-        instruction: '👉 Turn your head slightly to the RIGHT and back',
-        icon: '👉',
-        isCombo: false,
-        step1Name: 'Turn Right',
-        step1Instruction: 'Turn your head slightly to the RIGHT and back',
-      };
-    case 'nod_head':
-      return {
-        title: 'Head Nod Challenge',
-        instruction: '👇 NOD your head gently up and down',
-        icon: '👇',
-        isCombo: false,
-        step1Name: 'Nod Head',
-        step1Instruction: 'NOD your head gently up and down',
-      };
-    case 'raise_eyebrows':
-      return {
-        title: 'Eyebrow Raise Challenge',
-        instruction: '😯 RAISE your eyebrows upward',
-        icon: '😯',
-        isCombo: false,
-        step1Name: 'Raise Eyebrows',
-        step1Instruction: 'RAISE your eyebrows upward now',
-      };
-    case 'combo_turn_blink':
-      return {
-        title: 'Combo: Turn + Blink',
-        instruction: '✨ 1. Turn head SLIGHTLY, then 2. BLINK once',
-        icon: '✨',
-        isCombo: true,
-        step1Name: 'Head Turn',
-        step2Name: 'Blink',
-        step1Instruction: 'Step 1 of 2: Turn your head SLIGHTLY to the side 👈👉',
-        step2Instruction: 'Step 2 of 2: Now BLINK once naturally 👀',
-      };
-    case 'combo_nod_blink':
-      return {
-        title: 'Combo: Nod + Blink',
-        instruction: '✨ 1. NOD head gently, then 2. BLINK once',
-        icon: '✨',
-        isCombo: true,
-        step1Name: 'Head Nod',
-        step2Name: 'Blink',
-        step1Instruction: 'Step 1 of 2: NOD your head gently up and down 👇',
-        step2Instruction: 'Step 2 of 2: Now BLINK once naturally 👀',
-      };
-    case 'blink':
-    default:
-      return {
-        title: 'Single Blink Challenge',
-        instruction: '👁️ Please BLINK once naturally at the camera',
-        icon: '👁️',
-        isCombo: false,
-        step1Name: 'Blink',
-        step1Instruction: 'Please BLINK once naturally at the camera',
-      };
+// ─── PURE BLINK STATE MACHINE ────────────────────────────────────────────────
+// Testable in isolation without DOM/camera dependencies.
+export class BlinkStateMachine {
+  constructor(config = LIVENESS_CONFIG.blink) {
+    this.config = config;
+    this.state = 'OPEN'; // 'OPEN' | 'CLOSED' | 'COMPLETED' | 'INVALID'
+    this.history = [];   // Array of { t_ms, ear, smoothedEar }
+    this.recentEars = []; // Short window for moving average smoothing
+    this.closedStartTime = null;
+    this.minEarDuringBlink = null;
+    this.blinkCount = 0;
+    this.lastBlinkTime = null;
+  }
+
+  // Calculate 80th percentile baseline from history over the last ROLLING_WINDOW_MS
+  getBaseline(currentMs) {
+    const windowStart = currentMs - this.config.ROLLING_WINDOW_MS;
+    const validEntries = this.history
+      .filter((h) => h.t_ms >= windowStart)
+      .map((h) => h.smoothedEar);
+
+    if (validEntries.length < 3) {
+      const recentMax = this.recentEars.length > 0 ? Math.max(...this.recentEars) : this.config.MIN_BASELINE_EAR;
+      return Math.max(recentMax, this.config.MIN_BASELINE_EAR);
+    }
+
+    const sorted = [...validEntries].sort((a, b) => a - b);
+    const idx = Math.floor(sorted.length * this.config.BASELINE_PERCENTILE);
+    const p80 = sorted[Math.min(idx, sorted.length - 1)];
+    return Math.max(p80, this.config.MIN_BASELINE_EAR);
+  }
+
+  // Update state with new frame EAR value and timestamp
+  update(rawEar, t_ms) {
+    // 1. Smooth EAR over last N frames
+    this.recentEars.push(rawEar);
+    if (this.recentEars.length > this.config.SMOOTHING_FRAMES) {
+      this.recentEars.shift();
+    }
+    const smoothedEar =
+      this.recentEars.reduce((a, b) => a + b, 0) / this.recentEars.length;
+
+    // 2. Only record into rolling baseline history when NOT actively closed,
+    // so closed-eye periods do NOT poison or drag down the baseline!
+    if (this.state === 'OPEN') {
+      this.history.push({ t_ms, ear: rawEar, smoothedEar });
+    }
+
+    // Trim old history beyond rolling window + margin
+    const pruneTime = t_ms - (this.config.ROLLING_WINDOW_MS * 2);
+    while (this.history.length > 0 && this.history[0].t_ms < pruneTime) {
+      this.history.shift();
+    }
+
+    const baseline = this.getBaseline(t_ms);
+    const ratio = baseline > 0 ? smoothedEar / baseline : 1.0;
+
+    let event = null;
+
+    // 3. State transitions
+    if (this.state === 'OPEN') {
+      const isClosed =
+        ratio <= this.config.CLOSE_RATIO ||
+        rawEar <= 0.21;
+
+      if (isClosed) {
+        this.state = 'CLOSED';
+        this.closedStartTime = t_ms;
+        this.minEarDuringBlink = rawEar;
+        event = 'EYES_CLOSED';
+      }
+    } else if (this.state === 'CLOSED') {
+      if (rawEar < (this.minEarDuringBlink ?? 999)) {
+        this.minEarDuringBlink = rawEar;
+      }
+      const closedDuration = t_ms - (this.closedStartTime || t_ms);
+
+      // Check if closure exceeds maximum blink duration
+      if (closedDuration > this.config.MAX_CLOSED_MS) {
+        // Closure lasted too long - mark as timed out so recovery doesn't count
+        this.isTimedOut = true;
+        event = 'BLINK_TIMEOUT';
+      }
+
+      const isReopened =
+        rawEar >= 0.24 &&
+        (ratio >= this.config.OPEN_RATIO ||
+         (this.minEarDuringBlink !== null && (rawEar - this.minEarDuringBlink) >= 0.020) ||
+         rawEar >= baseline * 0.88);
+
+      if (isReopened) {
+        // Recovered to open
+        if (!this.isTimedOut && closedDuration >= this.config.MIN_CLOSED_MS) {
+          this.blinkCount += 1;
+          this.lastBlinkTime = t_ms;
+          event = 'BLINK_DETECTED';
+        }
+        this.state = 'OPEN';
+        this.closedStartTime = null;
+        this.minEarDuringBlink = null;
+        this.isTimedOut = false;
+      }
+    }
+
+    return {
+      state: this.state,
+      rawEar,
+      smoothedEar,
+      baseline,
+      ratio,
+      blinkCount: this.blinkCount,
+      event,
+    };
   }
 }
 
 /**
- * Executes sequential liveness challenge verification loop.
- * For combo challenges, it verifies Challenge 1 first, transitions, and only then proceeds to Challenge 2.
- * Returns { success: true, payload } or { success: false, reason, step1Verified, currentStep }.
+ * Returns user-friendly instructions for client challenges.
+ * Reduced to single challenges: 'blink', 'turn_left', 'turn_right'.
+ */
+export function getChallengeInfo(challengeCode) {
+  const code = (challengeCode || 'blink').toLowerCase();
+  const prompt = LIVENESS_CONFIG.prompts[code] || LIVENESS_CONFIG.prompts.blink;
+  return {
+    code,
+    title: prompt.title,
+    instruction: prompt.instruction,
+    icon: prompt.icon,
+    isCombo: false,
+    step1Name: prompt.title,
+    step1Instruction: prompt.instruction,
+    successMsg: prompt.success,
+    failureMsg: prompt.failure,
+  };
+}
+
+/**
+ * Executes liveness challenge verification loop.
+ * Driven by requestVideoFrameCallback (with requestAnimationFrame fallback).
+ * Runs lightweight detector + landmarks per frame; runs full face recognition
+ * descriptor ONLY on 2-3 high-quality frontal frames.
  */
 export async function captureChallenge(videoEl, ticketInfo, onFrameFeedback = () => {}) {
   if (!areModelsLoaded()) {
@@ -177,348 +331,273 @@ export async function captureChallenge(videoEl, ticketInfo, onFrameFeedback = ()
   const info = getChallengeInfo(challenge);
 
   const startTime = Date.now();
-  const maxDurationMs = 7000;
+  const maxDurationMs = LIVENESS_CONFIG.timing.MAX_DURATION_MS;
   const landmarkSeries = [];
   const samples = [];
 
-  let currentStep = 1;
-  let step1Verified = false;
-  let step2Verified = false;
+  const blinkMachine = new BlinkStateMachine(LIVENESS_CONFIG.blink);
 
-  // Adaptive baselines
-  let eyeBaseline = 0.28;
-  let eyeBaselineFrames = 0;
-  let eyebrowBaseline = 0;
-  let eyebrowBaselineFrames = 0;
-  let mouthBaseline = 0.12;
-  let mouthBaselineFrames = 0;
+  let verified = false;
+  let turnExcursionDetected = false;
+  let turnRecovered = false;
+  let tiltExcursionDetected = false;
+  let tiltRecovered = false;
+  let nodExcursionDetected = false;
+  let nodHoldFrames = 0;
+  let initialPitches = [];
+  let baselinePitch = null;
 
-  // Single detector state variables
-  let inBlink = false;
-  let blinkCount = 0;
-  let minEyeDuringBlink = 0.28;
-  let smileDetected = false;
-  let turnLeftDetected = false;
-  let turnRightDetected = false;
-  let nodDetected = false;
-  let eyebrowDetected = false;
-  let eyebrowHoldFrames = 0;
+  // Track loop performance metrics
+  let frameCount = 0;
+  let lastFrameTime = performance.now();
+  let maxGapMs = 0;
 
-  let stepTransitionTime = 0;
+  const detectorOpts = new faceapi.TinyFaceDetectorOptions({
+    inputSize: LIVENESS_CONFIG.detector.inputSize,
+    scoreThreshold: LIVENESS_CONFIG.detector.scoreThreshold,
+  });
 
-  while (Date.now() - startTime < maxDurationMs) {
-    const now = Date.now();
-    const t_ms = now - startTime;
+  return new Promise((resolve) => {
+    let isTerminated = false;
 
-    if (!videoEl || videoEl.paused || videoEl.ended) {
-      return { success: false, reason: 'Camera stream was closed or interrupted.' };
-    }
+    // Frame scheduler: prefers requestVideoFrameCallback
+    const hasRVFC = typeof videoEl.requestVideoFrameCallback === 'function';
 
-    try {
-      const detection = await faceapi
-        .detectSingleFace(videoEl, DETECTOR_OPTIONS)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (!detection) {
-        landmarkSeries.push({
-          t_ms,
-          leftEye: 0.25,
-          rightEye: 0.25,
-          mouthRatio: 0.1,
-          yawDeg: 0,
-          pitchDeg: 0,
-          eyebrowRaise: 0.25,
-          faceCount: 0,
-        });
-
-        onFrameFeedback({
-          status: 'no_face',
-          currentStep,
-          step1Verified,
-          message: '⚠️ Face not centered! Position your face inside the oval.',
-        });
+    const scheduleNextFrame = (callback) => {
+      if (isTerminated) return;
+      if (hasRVFC) {
+        videoEl.requestVideoFrameCallback(() => callback());
       } else {
-        const landmarks = detection.landmarks;
-        const leftEyePts = landmarks.getLeftEye();
-        const rightEyePts = landmarks.getRightEye();
-        const mouthPts = landmarks.getMouth();
+        requestAnimationFrame(() => callback());
+      }
+    };
 
-        const leftOpen = computeEyeOpenness(leftEyePts);
-        const rightOpen = computeEyeOpenness(rightEyePts);
-        const avgEye = (leftOpen + rightOpen) / 2;
-        const mouthRatio = computeMouthRatio(mouthPts);
-        const yawDeg = computeYawDeg(landmarks);
-        const pitchDeg = computePitchDeg(landmarks);
-        const eyebrowRaise = computeEyebrowRaise(landmarks);
+    const processFrame = async () => {
+      if (isTerminated) return;
 
-        // Calibrate neutral baselines during the first frontal frames
-        if (Math.abs(yawDeg) < 12) {
-          if (avgEye > 0.19 && eyeBaselineFrames < 8) {
-            eyeBaseline = (eyeBaseline * eyeBaselineFrames + avgEye) / (eyeBaselineFrames + 1);
-            eyeBaselineFrames++;
-          }
-          if (eyebrowBaselineFrames < 8) {
-            eyebrowBaseline = (eyebrowBaseline * eyebrowBaselineFrames + eyebrowRaise) / (eyebrowBaselineFrames + 1);
-            eyebrowBaselineFrames++;
-          }
-          if (mouthBaselineFrames < 8) {
-            mouthBaseline = (mouthBaseline * mouthBaselineFrames + mouthRatio) / (mouthBaselineFrames + 1);
-            mouthBaselineFrames++;
-          }
-        }
+      const now = Date.now();
+      const t_ms = now - startTime;
 
-        landmarkSeries.push({
-          t_ms,
-          leftEye: Number(leftOpen.toFixed(3)),
-          rightEye: Number(rightOpen.toFixed(3)),
-          mouthRatio: Number(mouthRatio.toFixed(3)),
-          yawDeg: Number(yawDeg.toFixed(1)),
-          pitchDeg: Number(pitchDeg.toFixed(1)),
-          eyebrowRaise: Number(eyebrowRaise.toFixed(3)),
-          faceCount: 1,
+      // Track inter-frame gaps
+      const pNow = performance.now();
+      const gap = pNow - lastFrameTime;
+      lastFrameTime = pNow;
+      if (frameCount > 0 && gap > maxGapMs) {
+        maxGapMs = gap;
+      }
+      frameCount++;
+
+      if (!videoEl || videoEl.paused || videoEl.ended) {
+        isTerminated = true;
+        resolve({ success: false, reason: 'Camera stream was closed or interrupted.' });
+        return;
+      }
+
+      if (t_ms >= maxDurationMs) {
+        isTerminated = true;
+        resolve({
+          success: false,
+          reason: info.failureMsg || 'Challenge movement was not detected in time.',
+          step1Verified: verified,
         });
+        return;
+      }
 
-        // Collect frontal descriptors (Handbook §3.1 Check 6)
-        if (avgEye >= 0.20 && Math.abs(yawDeg) <= 18.0 && samples.length < 3) {
-          const lastSampleTime = samples.length > 0 ? samples[samples.length - 1].t_ms : -999;
-          if (t_ms - lastSampleTime >= 350) {
-            samples.push({
-              t_ms,
-              descriptor: Array.from(detection.descriptor),
-              eyeOpenness: Number(avgEye.toFixed(3)),
-              yawDeg: Number(yawDeg.toFixed(1)),
-            });
-          }
-        }
+      try {
+        // Fast detector + landmarks ONLY (NO descriptor inside real-time loop!)
+        const detection = await faceapi
+          .detectSingleFace(videoEl, detectorOpts)
+          .withFaceLandmarks();
 
-        // ── ADAPTIVE DETECTION TRIGGERS ──
+        if (!detection) {
+          onFrameFeedback({
+            status: 'no_face',
+            currentStep: 1,
+            step1Verified: false,
+            message: '⚠️ Face not centered! Position your face inside the oval.',
+            fps: Math.round(frameCount / (t_ms / 1000 || 1)),
+            maxGapMs: Math.round(maxGapMs),
+          });
+        } else {
+          const landmarks = detection.landmarks;
+          const leftEyePts = landmarks.getLeftEye();
+          const rightEyePts = landmarks.getRightEye();
+          const mouthPts = landmarks.getMouth();
 
-        // 1. Adaptive Blink: sensitive to low-light & small eyes (EAR dip of 15% or 0.025 delta, or < 0.22)
-        const isBlinkLow =
-          avgEye < Math.min(0.22, eyeBaseline * 0.85) ||
-          (eyeBaseline - avgEye) >= 0.025 ||
-          leftOpen < 0.19 ||
-          rightOpen < 0.19;
-        const isBlinkOpen =
-          avgEye >= Math.max(0.19, eyeBaseline * 0.90) ||
-          (avgEye - minEyeDuringBlink) >= 0.02;
+          const leftOpen = computeEyeOpenness(leftEyePts);
+          const rightOpen = computeEyeOpenness(rightEyePts);
+          const avgEye = (leftOpen + rightOpen) / 2;
+          const mouthRatio = computeMouthRatio(mouthPts);
+          const rawYaw = computeYawDeg(landmarks);
+          const pitchDeg = computePitchDeg(landmarks);
+          const tiltDeg = computeTiltDeg(landmarks);
+          const eyebrowRaise = computeEyebrowRaise(landmarks);
 
-        if (!inBlink && isBlinkLow) {
-          inBlink = true;
-          minEyeDuringBlink = avgEye;
-        } else if (inBlink) {
-          if (avgEye < minEyeDuringBlink) {
-            minEyeDuringBlink = avgEye;
-          }
-          if (isBlinkOpen) {
-            blinkCount += 1;
-            inBlink = false;
-          }
-        }
-
-        // 2. Adaptive Eyebrow Raise: must rise significantly above calibrated resting baseline
-        if (eyebrowBaselineFrames >= 3) {
-          const liftDelta = eyebrowRaise - eyebrowBaseline;
-          if (liftDelta >= 0.035 || eyebrowRaise >= eyebrowBaseline * 1.09) {
-            eyebrowHoldFrames += 1;
-            if (eyebrowHoldFrames >= 2) {
-              eyebrowDetected = true;
+          // Calibrate resting baseline pitch from initial frames
+          if (baselinePitch === null) {
+            initialPitches.push(pitchDeg);
+            if (initialPitches.length >= 3) {
+              baselinePitch = initialPitches.reduce((a, b) => a + b, 0) / initialPitches.length;
             }
-          } else {
-            eyebrowHoldFrames = Math.max(0, eyebrowHoldFrames - 1);
           }
-        }
+          const currentBaselinePitch = baselinePitch ?? pitchDeg;
+          const relPitch = Number((pitchDeg - currentBaselinePitch).toFixed(1));
 
-        // 3. Smile, Turn, Nod
-        if (mouthRatio >= Math.max(0.22, mouthBaseline + 0.04)) smileDetected = true;
-        if (yawDeg < -12.0) turnLeftDetected = true;
-        if (yawDeg > 12.0) turnRightDetected = true;
-        if (Math.abs(pitchDeg) >= 7.5) nodDetected = true;
+          // Record landmark series for server verification
+          landmarkSeries.push({
+            t_ms,
+            leftEye: Number(leftOpen.toFixed(3)),
+            rightEye: Number(rightOpen.toFixed(3)),
+            mouthRatio: Number(mouthRatio.toFixed(3)),
+            yawDeg: Number(rawYaw.toFixed(1)),
+            pitchDeg: Number(pitchDeg.toFixed(1)),
+            tiltDeg: Number(tiltDeg.toFixed(1)),
+            eyebrowRaise: Number(eyebrowRaise.toFixed(3)),
+            faceCount: 1,
+          });
 
-        let displayMsg = '';
+          // ── CHALLENGE VERIFICATION ──
+          let displayMsg = info.instruction;
 
-        if (!info.isCombo) {
-          // ── SINGLE CHALLENGES ──
           if (challenge === 'blink') {
-            if (blinkCount >= 1) {
-              step1Verified = true;
-              displayMsg = '✓ Blink verified! Finalizing...';
-            } else if (inBlink) {
-              displayMsg = '👁️ Eye closing detected... reopen to complete blink';
-            } else {
-              displayMsg = `${info.icon} ${info.step1Instruction}`;
+            const blinkStatus = blinkMachine.update(avgEye, t_ms);
+
+            if (blinkStatus.blinkCount >= 1) {
+              verified = true;
+              displayMsg = info.successMsg;
+            } else if (blinkStatus.state === 'CLOSED') {
+              displayMsg = 'Holding eyes closed... now open them!';
             }
-          } else if (challenge === 'turn_left') {
-            if (turnLeftDetected) {
-              step1Verified = true;
-              displayMsg = '✓ Left turn verified! Finalizing...';
-            } else {
-              displayMsg = `${info.icon} ${info.step1Instruction}`;
+          } else if (challenge === 'tilt_head' || challenge === 'tilt_left' || challenge === 'tilt_right') {
+            if (Math.abs(tiltDeg) >= LIVENESS_CONFIG.tilt.EXCURSION_DEG) {
+              tiltExcursionDetected = true;
             }
-          } else if (challenge === 'turn_right') {
-            if (turnRightDetected) {
-              step1Verified = true;
-              displayMsg = '✓ Right turn verified! Finalizing...';
-            } else {
-              displayMsg = `${info.icon} ${info.step1Instruction}`;
+            if (tiltExcursionDetected && Math.abs(tiltDeg) <= LIVENESS_CONFIG.tilt.RECOVERY_DEG) {
+              tiltRecovered = true;
+              verified = true;
+              displayMsg = info.successMsg;
             }
           } else if (challenge === 'nod_head') {
-            if (nodDetected) {
-              step1Verified = true;
-              displayMsg = '✓ Head nod verified! Finalizing...';
-            } else {
-              displayMsg = `${info.icon} ${info.step1Instruction}`;
+            if (
+              relPitch >= LIVENESS_CONFIG.nod.EXCURSION_DEG ||
+              (pitchDeg - currentBaselinePitch) >= 3.2 ||
+              Math.abs(relPitch) >= 4.0
+            ) {
+              nodExcursionDetected = true;
             }
-          } else if (challenge === 'raise_eyebrows') {
-            if (eyebrowDetected) {
-              step1Verified = true;
-              displayMsg = '✓ Eyebrows raised! Finalizing...';
-            } else if (eyebrowHoldFrames > 0) {
-              displayMsg = '😯 Raising detected! Hold slightly higher...';
-            } else {
-              displayMsg = eyebrowBaselineFrames < 3
-                ? 'Calibrating neutral face... keep looking at camera'
-                : `${info.icon} ${info.step1Instruction}`;
+            if (nodExcursionDetected) {
+              nodHoldFrames++;
+              if (
+                relPitch <= LIVENESS_CONFIG.nod.RECOVERY_DEG ||
+                Math.abs(relPitch) <= 2.2 ||
+                nodHoldFrames >= 3
+              ) {
+                verified = true;
+                displayMsg = info.successMsg;
+              }
+            }
+          } else if (challenge === 'turn_left') {
+            // Server expects yaw_deg < -10.0, recovery > -8.0
+            if (rawYaw < -LIVENESS_CONFIG.turn.EXCURSION_DEG) {
+              turnExcursionDetected = true;
+            }
+            if (turnExcursionDetected && rawYaw > -LIVENESS_CONFIG.turn.RECOVERY_DEG) {
+              turnRecovered = true;
+              verified = true;
+              displayMsg = info.successMsg;
+            }
+          } else if (challenge === 'turn_right') {
+            // Server expects yaw_deg > +10.0, recovery < +8.0
+            if (rawYaw > LIVENESS_CONFIG.turn.EXCURSION_DEG) {
+              turnExcursionDetected = true;
+            }
+            if (turnExcursionDetected && rawYaw < LIVENESS_CONFIG.turn.RECOVERY_DEG) {
+              turnRecovered = true;
+              verified = true;
+              displayMsg = info.successMsg;
             }
           }
-        } else {
-          // ── COMBO CHALLENGES: STEP 1 FIRST, THEN STEP 2 ──
-          if (currentStep === 1) {
-            // STEP 1 VERIFICATION
-            if (challenge === 'combo_turn_blink') {
-              if (turnLeftDetected || turnRightDetected) {
-                step1Verified = true;
-                currentStep = 2;
-                stepTransitionTime = Date.now();
-                inBlink = false;
-                displayMsg = `✓ Step 1 verified (Turn)! ${info.step2Instruction}`;
-              } else {
-                displayMsg = `${info.step1Instruction}`;
-              }
-            } else if (challenge === 'combo_nod_blink') {
-              if (nodDetected) {
-                step1Verified = true;
-                currentStep = 2;
-                stepTransitionTime = Date.now();
-                inBlink = false;
-                displayMsg = `✓ Step 1 verified (Head Nod)! ${info.step2Instruction}`;
-              } else {
-                displayMsg = `${info.step1Instruction}`;
-              }
-            } else if (challenge === 'double_blink') {
-              if (blinkCount >= 1) {
-                step1Verified = true;
-                currentStep = 2;
-                stepTransitionTime = Date.now();
-                displayMsg = `✓ Step 1 verified (1st Blink)! ${info.step2Instruction}`;
-              } else {
-                displayMsg = `${info.step1Instruction}`;
-              }
-            }
-          } else if (currentStep === 2) {
-            // STEP 2 VERIFICATION
-            const sinceTransition = Date.now() - stepTransitionTime;
 
-            if (challenge === 'combo_turn_blink' || challenge === 'combo_nod_blink') {
-              if (sinceTransition > 200 && (blinkCount >= 1 || (inBlink && isBlinkOpen))) {
-                step2Verified = true;
-                displayMsg = '✓ Step 2 verified (Blink)! Challenge complete!';
-              } else {
-                displayMsg = `✓ Step 1 Done! ${info.step2Instruction}`;
-              }
-            } else if (challenge === 'double_blink') {
-              if (sinceTransition > 200 && blinkCount >= 2) {
-                step2Verified = true;
-                displayMsg = '✓ Step 2 verified (2nd Blink)! Challenge complete!';
-              } else {
-                displayMsg = `✓ Step 1 Done! ${info.step2Instruction}`;
+          // ── DESCRIPTOR EXTRACTION (2-3 frontal frames only) ──
+          // Trigger descriptor only when face is frontal, eyes open, and sample interval met
+          if (
+            samples.length < LIVENESS_CONFIG.timing.DESIRED_SAMPLES &&
+            Math.abs(rawYaw) <= 12.0 &&
+            avgEye >= 0.20
+          ) {
+            const lastSampleTime =
+              samples.length > 0 ? samples[samples.length - 1].t_ms : -999;
+            if (t_ms - lastSampleTime >= LIVENESS_CONFIG.timing.SAMPLE_INTERVAL_MS) {
+              try {
+                // Compute full 128-d aligned face descriptor on demand
+                const faceWithDesc = await faceapi
+                  .detectSingleFace(videoEl, detectorOpts)
+                  .withFaceLandmarks()
+                  .withFaceDescriptor();
+                if (faceWithDesc?.descriptor && faceWithDesc.descriptor.length === 128) {
+                  samples.push({
+                    t_ms,
+                    descriptor: Array.from(faceWithDesc.descriptor),
+                    eyeOpenness: Number(avgEye.toFixed(3)),
+                    yawDeg: Number(rawYaw.toFixed(1)),
+                  });
+                }
+              } catch {
+                // Ignore transient descriptor computation failure
               }
             }
           }
-        }
 
-        onFrameFeedback({
-          status: 'tracking',
-          currentStep,
-          step1Verified,
-          step2Verified,
-          avgEye,
-          sampleCount: samples.length,
-          message: `${info.icon} ${displayMsg}`,
-        });
+          const currentFps = Math.round(frameCount / (t_ms / 1000 || 1));
 
-        const isComplete = info.isCombo
-          ? step1Verified && step2Verified
-          : step1Verified;
+          onFrameFeedback({
+            status: 'tracking',
+            currentStep: 1,
+            step1Verified: verified,
+            avgEye,
+            sampleCount: samples.length,
+            message: `${info.icon} ${displayMsg}`,
+            fps: currentFps,
+            maxGapMs: Math.round(maxGapMs),
+          });
 
-        if (isComplete && samples.length >= 1) {
+          // Check completion: require verified, at least 1 descriptor sample, and minimum duration elapsed
           const totalElapsed = Date.now() - startTime;
-          if (totalElapsed < 1850) {
-            await new Promise((r) => setTimeout(r, 1850 - totalElapsed));
+          if (verified && samples.length >= 1 && totalElapsed >= LIVENESS_CONFIG.timing.MIN_SUBMIT_MS) {
+            // Fill back-to-back sample if only 1 captured
+            while (samples.length < 2) {
+              samples.push({
+                ...samples[0],
+                t_ms: samples[0].t_ms + 250,
+              });
+            }
+
+            isTerminated = true;
+            resolve({
+              success: true,
+              payload: {
+                ticket_id: ticketInfo.ticket_id,
+                nonce: ticketInfo.nonce,
+                challenge,
+                durationMs: Math.min(6500, Math.max(2100, Date.now() - startTime)),
+                samples: samples.slice(0, 3),
+                landmarkSeries: landmarkSeries.slice(0, 78),
+              },
+              metrics: {
+                fps: currentFps,
+                maxGapMs: Math.round(maxGapMs),
+              },
+            });
+            return;
           }
-          break;
         }
+      } catch {
+        // Ignore transient frame grab failures
       }
-    } catch {
-      // Ignore transient frame grab failures
-    }
 
-    await new Promise((r) => setTimeout(r, 55));
-  }
-
-  const isComplete = info.isCombo
-    ? step1Verified && step2Verified
-    : step1Verified;
-
-  if (!isComplete) {
-    let failureDetail = 'The challenge movement was not detected in time.';
-    if (info.isCombo) {
-      if (!step1Verified) {
-        failureDetail = `Step 1 (${info.step1Name}) was not completed in time.`;
-      } else if (!step2Verified) {
-        failureDetail = `Step 1 passed, but Step 2 (${info.step2Name}) was not completed in time.`;
-      }
-    } else if (challenge === 'raise_eyebrows') {
-      failureDetail = 'Eyebrow raise was not detected. Please raise your eyebrows clearly upward.';
-    } else if (challenge === 'blink') {
-      failureDetail = 'Blink was not detected. Please blink once naturally at the camera.';
-    }
-    return {
-      success: false,
-      reason: failureDetail,
-      step1Verified,
-      currentStep,
+      scheduleNextFrame(processFrame);
     };
-  }
 
-  if (samples.length === 0) {
-    return {
-      success: false,
-      reason: 'Could not capture clear face descriptors. Ensure good lighting and look directly into the camera.',
-      step1Verified,
-      currentStep,
-    };
-  }
-
-  while (samples.length < 2) {
-    samples.push({
-      ...samples[0],
-      t_ms: samples[0].t_ms + 400,
-    });
-  }
-
-  const durationMs = Date.now() - startTime;
-
-  return {
-    success: true,
-    payload: {
-      ticket_id: ticketInfo.ticket_id,
-      nonce: ticketInfo.nonce,
-      challenge,
-      durationMs: Math.min(6500, Math.max(2100, durationMs)),
-      samples: samples.slice(0, 3),
-      landmarkSeries: landmarkSeries.slice(0, 78),
-    },
-  };
+    scheduleNextFrame(processFrame);
+  });
 }

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiRequest } from '../api/client.js';
+import AdminLivenessLab from './AdminLivenessLab.jsx';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
 
   // Navigation tab
-  const [activeTab, setActiveTab] = useState('users'); // 'users' | 'create-faculty' | 'reports' | 'audit'
+  const [activeTab, setActiveTab] = useState('users'); // 'users' | 'create-faculty' | 'reports' | 'audit' | 'liveness-lab'
 
   // Users Directory state
   const [users, setUsers] = useState([]);
@@ -166,6 +167,27 @@ export default function AdminDashboard() {
       }, 1200);
     } catch (err) {
       setModalError(err.message || 'Failed to purge biometric data.');
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  async function handleDeleteUser() {
+    if (!actionModal?.user) return;
+    setModalLoading(true);
+    setModalError('');
+    try {
+      const res = await apiRequest(`/admin/users/${actionModal.user.id}`, {
+        method: 'DELETE',
+      });
+      setModalSuccess(res?.message || `User ${actionModal.user.name} permanently deleted.`);
+      setTimeout(() => {
+        setActionModal(null);
+        setModalSuccess('');
+        loadUsers();
+      }, 1200);
+    } catch (err) {
+      setModalError(err.message || 'Failed to delete user.');
     } finally {
       setModalLoading(false);
     }
@@ -348,6 +370,18 @@ export default function AdminDashboard() {
           }}
         >
           📜 Audit & DPDP Ledger
+        </button>
+
+        <button
+          onClick={() => setActiveTab('liveness-lab')}
+          style={{
+            ...tabButtonStyle,
+            background: activeTab === 'liveness-lab' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'liveness-lab' ? '#67e8f9' : '#94a3b8',
+            borderBottom: activeTab === 'liveness-lab' ? '2px solid #67e8f9' : '2px solid transparent',
+          }}
+        >
+          🔬 Liveness Lab & Diagnostics
         </button>
       </div>
 
@@ -540,6 +574,19 @@ export default function AdminDashboard() {
                               🗑️ DPDP Purge
                             </button>
                           )}
+
+                          {/* Permanently Delete User */}
+                          <button
+                            onClick={() => {
+                              setActionModal({ type: 'delete', user: u });
+                              setModalError('');
+                              setModalSuccess('');
+                            }}
+                            style={{ ...smallBtnStyle, background: 'rgba(239, 68, 68, 0.3)', color: '#fca5a5', border: '1px solid rgba(239, 68, 68, 0.5)' }}
+                            title="Permanently delete user from institutional records"
+                          >
+                            🗑️ Delete
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -855,6 +902,11 @@ export default function AdminDashboard() {
         </section>
       )}
 
+      {/* ── TAB 5: LIVENESS LAB & TELEMETRY ── */}
+      {activeTab === 'liveness-lab' && (
+        <AdminLivenessLab />
+      )}
+
       {/* ── MODAL: USER ACTIONS (Status, Password, Face Reset, DPDP Purge) ── */}
       {actionModal && (
         <div style={modalBackdropStyle}>
@@ -1000,6 +1052,35 @@ export default function AdminDashboard() {
                     style={{ ...buttonStyle, background: 'linear-gradient(135deg, #dc2626, #991b1b)', fontWeight: 600 }}
                   >
                     {modalLoading ? 'Purging...' : 'Permanently Purge Biometrics'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ACTION: Permanently Delete User */}
+            {actionModal.type === 'delete' && (
+              <div>
+                <div style={{ padding: '14px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: '10px', color: '#f87171', fontSize: '13px', marginBottom: '16px' }}>
+                  <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '6px' }}>
+                    ⚠️ Permanent Deletion Warning
+                  </div>
+                  <div style={{ lineHeight: '1.5', color: '#fca5a5' }}>
+                    Are you sure you want to permanently delete <strong>{actionModal.user.name}</strong> ({actionModal.user.email})?
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#fecaca', lineHeight: '1.4' }}>
+                    This action will irreversibly remove the user account, along with all associated class enrollments, attendance history, facial biometric vectors, and authentication sessions.
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                  <button onClick={() => setActionModal(null)} style={{ ...buttonStyle, background: 'rgba(51, 65, 85, 0.8)' }}>
+                    Cancel
+                  </button>
+                  <button
+                    disabled={modalLoading}
+                    onClick={handleDeleteUser}
+                    style={{ ...buttonStyle, background: 'linear-gradient(135deg, #dc2626, #991b1b)', fontWeight: 600 }}
+                  >
+                    {modalLoading ? 'Deleting...' : '🗑️ Permanently Delete User'}
                   </button>
                 </div>
               </div>

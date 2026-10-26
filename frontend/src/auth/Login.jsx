@@ -14,6 +14,17 @@ function Login() {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Mandatory password change state
+  const [mustChangePasswordMode, setMustChangePasswordMode] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState('');
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState('');
+  const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+  const [pendingUserRole, setPendingUserRole] = useState('');
+
   useEffect(() => {
     // Check URL param ?role=faculty or ?role=student
     const params = new URLSearchParams(location.search);
@@ -85,7 +96,23 @@ function Login() {
       sessionStorage.setItem('isLoggedIn', 'true');
       sessionStorage.setItem('role', userRole);
 
-      // Route accordingly
+      const mustChange = Boolean(
+        data?.user?.must_change_password || data?.must_change_password
+      );
+
+      // If must_change_password is true, intercept and display password change screen
+      if (mustChange) {
+        sessionStorage.setItem('mustChangePassword', 'true');
+        setCurrentPasswordInput(password);
+        setNewPasswordInput('');
+        setConfirmPasswordInput('');
+        setPendingUserRole(userRole);
+        setMustChangePasswordMode(true);
+        setMessage('');
+        return;
+      }
+
+      // Otherwise route directly
       setTimeout(() => {
         if (userRole === 'admin') {
           navigate('/admin');
@@ -100,6 +127,67 @@ function Login() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleChangePassword(e) {
+    e.preventDefault();
+    setChangePasswordError('');
+    setChangePasswordSuccess('');
+
+    if (!currentPasswordInput) {
+      setChangePasswordError('Please enter your current password.');
+      return;
+    }
+    if (!newPasswordInput || newPasswordInput.length < 8) {
+      setChangePasswordError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (newPasswordInput === currentPasswordInput) {
+      setChangePasswordError('New password cannot be the same as current password.');
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      setChangePasswordError('New passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setChangePasswordLoading(true);
+    try {
+      await apiRequest('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: currentPasswordInput,
+          new_password: newPasswordInput,
+        }),
+      });
+
+      sessionStorage.removeItem('mustChangePassword');
+      setChangePasswordSuccess('Password updated successfully! Logging you in...');
+      setTimeout(() => {
+        if (pendingUserRole === 'admin') {
+          navigate('/admin');
+        } else if (pendingUserRole === 'faculty') {
+          navigate('/faculty');
+        } else {
+          navigate('/student');
+        }
+      }, 900);
+    } catch (err) {
+      setChangePasswordError(err?.message || 'Failed to update password. Please try again.');
+    } finally {
+      setChangePasswordLoading(false);
+    }
+  }
+
+  function handleCancelPasswordChange() {
+    sessionStorage.clear();
+    setMustChangePasswordMode(false);
+    setCurrentPasswordInput('');
+    setNewPasswordInput('');
+    setConfirmPasswordInput('');
+    setChangePasswordError('');
+    setChangePasswordSuccess('');
+    setPassword('');
   }
 
   const inputStyle = {
@@ -225,7 +313,161 @@ function Login() {
             boxShadow: '0 16px 40px rgba(0,0,0,0.4)',
           }}
         >
-          {/* Two-Type Login Toggle */}
+          {mustChangePasswordMode ? (
+            <div>
+              <div style={{ textAlign: 'center', marginBottom: '22px' }}>
+                <div style={{ fontSize: '38px', marginBottom: '8px' }}>🔐</div>
+                <h2 style={{ fontSize: '22px', margin: '0 0 6px', fontWeight: 700, color: '#f8fafc' }}>
+                  Mandatory Password Change
+                </h2>
+                <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, lineHeight: 1.5 }}>
+                  Your account requires setting a new password upon first login or after a password reset before continuing.
+                </p>
+              </div>
+
+              {changePasswordError && (
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: '10px',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.35)',
+                    color: '#fca5a5',
+                    fontSize: '13px',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  ⚠️ {changePasswordError}
+                </div>
+              )}
+
+              {changePasswordSuccess && (
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: '10px',
+                    background: 'rgba(74, 222, 128, 0.15)',
+                    border: '1px solid rgba(74, 222, 128, 0.35)',
+                    color: '#4ade80',
+                    fontSize: '13px',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  ✅ {changePasswordSuccess}
+                </div>
+              )}
+
+              <form onSubmit={handleChangePassword}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label htmlFor="current-pwd-input" style={labelStyle}>
+                    Current / Temporary Password <span style={{ color: '#fb7185' }}>*</span>
+                  </label>
+                  <input
+                    id="current-pwd-input"
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    value={currentPasswordInput}
+                    onChange={(e) => {
+                      setCurrentPasswordInput(e.target.value);
+                      setChangePasswordError('');
+                    }}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label htmlFor="new-pwd-input" style={labelStyle}>
+                    New Password <span style={{ color: '#fb7185' }}>*</span> (min. 8 characters)
+                  </label>
+                  <input
+                    id="new-pwd-input"
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    placeholder="Enter new secure password"
+                    value={newPasswordInput}
+                    onChange={(e) => {
+                      setNewPasswordInput(e.target.value);
+                      setChangePasswordError('');
+                    }}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '18px' }}>
+                  <label htmlFor="confirm-pwd-input" style={labelStyle}>
+                    Confirm New Password <span style={{ color: '#fb7185' }}>*</span>
+                  </label>
+                  <input
+                    id="confirm-pwd-input"
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    placeholder="Re-type new password"
+                    value={confirmPasswordInput}
+                    onChange={(e) => {
+                      setConfirmPasswordInput(e.target.value);
+                      setChangePasswordError('');
+                    }}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '22px' }}>
+                  <input
+                    id="show-new-pwd-toggle"
+                    type="checkbox"
+                    checked={showNewPassword}
+                    onChange={(e) => setShowNewPassword(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="show-new-pwd-toggle" style={{ fontSize: '13px', color: '#cbd5e1', cursor: 'pointer' }}>
+                    Show Passwords
+                  </label>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={changePasswordLoading}
+                  style={{
+                    width: '100%',
+                    padding: '14px',
+                    border: 'none',
+                    borderRadius: '11px',
+                    background: 'linear-gradient(135deg, #06b6d4, #3b82f6)',
+                    color: '#fff',
+                    fontSize: '14px',
+                    fontWeight: 700,
+                    cursor: changePasswordLoading ? 'not-allowed' : 'pointer',
+                    opacity: changePasswordLoading ? 0.7 : 1,
+                    boxShadow: '0 8px 24px rgba(6, 182, 212, 0.35)',
+                    marginBottom: '12px',
+                  }}
+                >
+                  {changePasswordLoading ? 'Updating Password...' : 'Save New Password & Continue →'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCancelPasswordChange}
+                  style={{
+                    width: '100%',
+                    padding: '11px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    borderRadius: '10px',
+                    background: 'transparent',
+                    color: '#94a3b8',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel & Sign Out
+                </button>
+              </form>
+            </div>
+          ) : (
+            <>
+              {/* Two-Type Login Toggle */}
           <div
             style={{
               display: 'grid',
@@ -447,6 +689,8 @@ function Login() {
               Register here
             </Link>
           </p>
+            </>
+          )}
         </section>
       </div>
     </main>

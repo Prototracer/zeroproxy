@@ -8,6 +8,57 @@ export default function Profile() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Password change state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
+
+  async function handlePasswordChange(e) {
+    e.preventDefault();
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (!currentPassword) {
+      setPasswordError('Please enter your current password.');
+      return;
+    }
+    if (!newPassword || newPassword.length < 8) {
+      setPasswordError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setPasswordError('New password cannot be identical to current password.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('New passwords do not match.');
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      await apiRequest('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      });
+      setPasswordSuccess('Password successfully updated!');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      sessionStorage.removeItem('mustChangePassword');
+    } catch (err) {
+      setPasswordError(err?.message || 'Failed to update password. Please check your credentials.');
+    } finally {
+      setPasswordLoading(false);
+    }
+  }
+
   useEffect(() => {
     async function fetchProfile() {
       try {
@@ -259,6 +310,120 @@ export default function Profile() {
                   {profile?.status.toUpperCase()}
                 </span>
               </div>
+            </div>
+
+            {/* Change Password Card */}
+            <div style={{ marginTop: '28px', paddingTop: '24px', borderTop: '1px solid rgba(148, 163, 184, 0.2)' }}>
+              <h3 style={{ fontSize: '17px', margin: '0 0 6px', color: '#67e8f9', fontWeight: 600 }}>
+                🔐 Security & Password
+              </h3>
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 18px', lineHeight: 1.5 }}>
+                Update your account password below. Minimum 8 characters.
+              </p>
+
+              {passwordError && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.35)',
+                    color: '#fca5a5',
+                    fontSize: '13px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  ⚠️ {passwordError}
+                </div>
+              )}
+
+              {passwordSuccess && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    background: 'rgba(74, 222, 128, 0.15)',
+                    border: '1px solid rgba(74, 222, 128, 0.35)',
+                    color: '#4ade80',
+                    fontSize: '13px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  ✅ {passwordSuccess}
+                </div>
+              )}
+
+              <form onSubmit={handlePasswordChange}>
+                <div style={groupStyle}>
+                  <label style={labelStyle}>Current Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Enter your current password"
+                    style={{
+                      ...readOnlyFieldStyle,
+                      border: '1px solid rgba(113, 168, 255, 0.3)',
+                      background: 'rgba(5, 14, 42, 0.65)',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+
+                <div style={groupStyle}>
+                  <label style={labelStyle}>New Password</label>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter at least 8 characters"
+                    style={{
+                      ...readOnlyFieldStyle,
+                      border: '1px solid rgba(113, 168, 255, 0.3)',
+                      background: 'rgba(5, 14, 42, 0.65)',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+
+                <div style={groupStyle}>
+                  <label style={labelStyle}>Confirm New Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-type new password"
+                    style={{
+                      ...readOnlyFieldStyle,
+                      border: '1px solid rgba(113, 168, 255, 0.3)',
+                      background: 'rgba(5, 14, 42, 0.65)',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={passwordLoading}
+                  style={{
+                    padding: '12px 20px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    cursor: passwordLoading ? 'not-allowed' : 'pointer',
+                    opacity: passwordLoading ? 0.7 : 1,
+                  }}
+                >
+                  {passwordLoading ? 'Updating Password...' : 'Save New Password'}
+                </button>
+              </form>
             </div>
           </div>
         )}
