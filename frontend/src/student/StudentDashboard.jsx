@@ -22,19 +22,19 @@ function StudentDashboard() {
   const [records, setRecords] = useState([]);
   const [statusMessage, setStatusMessage] = useState("Loading your attendance...");
 
-  // Join course state
+  // Join course state (Course Join Code only)
   const [joinCodeInput, setJoinCodeInput] = useState("");
-  const [facultyEmail, setFacultyEmail] = useState("");
-  const [courseCode, setCourseCode] = useState("");
-  const [useEmailFallback, setUseEmailFallback] = useState(false);
   const [joinSubmitting, setJoinSubmitting] = useState(false);
   const [joinNotice, setJoinNotice] = useState(null); // { type: 'success' | 'error', text: '' }
   const [joinRequests, setJoinRequests] = useState([]);
-  const [instructors, setInstructors] = useState([]);
   const [cancellingId, setCancellingId] = useState(null);
 
   // Enrolled classes & Leave Class state
   const [enrolledClasses, setEnrolledClasses] = useState([]);
+  const [selectedCourseId, setSelectedCourseId] = useState(null);
+  const [courseDetails, setCourseDetails] = useState(null);
+  const [loadingCourseDetails, setLoadingCourseDetails] = useState(false);
+  const [courseDetailsError, setCourseDetailsError] = useState("");
   const [leaveModalClass, setLeaveModalClass] = useState(null);
   const [leaveReason, setLeaveReason] = useState("");
   const [leaveSubmitting, setLeaveSubmitting] = useState(false);
@@ -51,6 +51,27 @@ function StudentDashboard() {
     }
   }
 
+  async function loadCourseDetails(classId) {
+    setLoadingCourseDetails(true);
+    setCourseDetailsError("");
+    try {
+      const data = await apiRequest(`/student/classes/${classId}/details`);
+      setCourseDetails(data);
+    } catch (err) {
+      setCourseDetailsError(err?.message || "Failed to load course details.");
+    } finally {
+      setLoadingCourseDetails(false);
+    }
+  }
+
+  useEffect(() => {
+    if (selectedCourseId) {
+      loadCourseDetails(selectedCourseId);
+    } else {
+      setCourseDetails(null);
+    }
+  }, [selectedCourseId]);
+
   async function handleLeaveClass(e) {
     if (e) e.preventDefault();
     if (!leaveModalClass) return;
@@ -64,6 +85,9 @@ function StudentDashboard() {
       });
       setLeaveModalClass(null);
       setLeaveReason("");
+      if (selectedCourseId === leaveModalClass.id) {
+        setSelectedCourseId(null);
+      }
       await loadEnrolledClasses();
       await loadStudentData();
     } catch (err) {
@@ -81,17 +105,6 @@ function StudentDashboard() {
       }
     } catch {
       // join requests endpoint might fail if token is not ready
-    }
-  }
-
-  async function loadInstructors() {
-    try {
-      const data = await apiRequest("/student/instructors");
-      if (Array.isArray(data)) {
-        setInstructors(data);
-      }
-    } catch {
-      // silently handle
     }
   }
 
@@ -122,7 +135,6 @@ function StudentDashboard() {
 
     loadStudentData();
     loadJoinRequests();
-    loadInstructors();
     loadEnrolledClasses();
 
     const pollInterval = setInterval(() => {
@@ -136,48 +148,9 @@ function StudentDashboard() {
     e.preventDefault();
     setJoinNotice(null);
 
-    // If using Course Join Code mode (default & recommended)
-    if (!useEmailFallback) {
-      const codeTrimmed = joinCodeInput.trim().toUpperCase();
-      if (!codeTrimmed) {
-        setJoinNotice({ type: "error", text: "Please enter the 6-character course join code provided by your instructor." });
-        return;
-      }
-
-      setJoinSubmitting(true);
-      try {
-        const res = await apiRequest("/student/join-requests", {
-          method: "POST",
-          body: JSON.stringify({
-            join_code: codeTrimmed,
-          }),
-        });
-
-        const freshRequests = await apiRequest("/student/join-requests");
-        if (Array.isArray(freshRequests)) {
-          setJoinRequests(freshRequests);
-        }
-
-        setJoinNotice({
-          type: "success",
-          text: res?.message || `Join request sent for code ${codeTrimmed}! Awaiting instructor approval.`,
-        });
-        setJoinCodeInput("");
-      } catch (err) {
-        setJoinNotice({
-          type: "error",
-          text: err?.message || "Could not submit join request with this code. Check if the code is enabled or already used.",
-        });
-      } finally {
-        setJoinSubmitting(false);
-      }
-      return;
-    }
-
-    // Fallback: via Faculty Email
-    const emailTrimmed = facultyEmail.trim().toLowerCase();
-    if (!emailTrimmed) {
-      setJoinNotice({ type: "error", text: "Please enter the faculty member's email address." });
+    const codeTrimmed = joinCodeInput.trim().toUpperCase();
+    if (!codeTrimmed) {
+      setJoinNotice({ type: "error", text: "Please enter the 6-character course join code provided by your instructor." });
       return;
     }
 
@@ -186,44 +159,24 @@ function StudentDashboard() {
       const res = await apiRequest("/student/join-requests", {
         method: "POST",
         body: JSON.stringify({
-          faculty_email: emailTrimmed,
-          course_code: courseCode.trim() || undefined,
+          join_code: codeTrimmed,
         }),
       });
 
-      // Reload join requests from backend immediately to verify persistence
       const freshRequests = await apiRequest("/student/join-requests");
       if (Array.isArray(freshRequests)) {
         setJoinRequests(freshRequests);
-        const didSave = freshRequests.some(
-          (r) => r.faculty_email?.toLowerCase() === emailTrimmed && r.status === "pending"
-        );
-
-        if (didSave) {
-          setJoinNotice({
-            type: "success",
-            text: "Join request submitted successfully! It is now visible on the right panel and awaiting faculty approval.",
-          });
-          setFacultyEmail("");
-          setCourseCode("");
-        } else {
-          setJoinNotice({
-            type: "error",
-            text: `Note: '${emailTrimmed}' is not recognized as a registered faculty member in your institution. No request was created. Please select an instructor from the list below.`,
-          });
-        }
-      } else {
-        setJoinNotice({
-          type: "success",
-          text: res?.message || "Join request submitted. Waiting for faculty approval.",
-        });
-        setFacultyEmail("");
-        setCourseCode("");
       }
+
+      setJoinNotice({
+        type: "success",
+        text: res?.message || `Join request sent for code ${codeTrimmed}! Awaiting instructor approval.`,
+      });
+      setJoinCodeInput("");
     } catch (err) {
       setJoinNotice({
         type: "error",
-        text: err?.message || "Could not submit join request. Please try again.",
+        text: err?.message || "Could not submit join request with this code. Check if the code is enabled or already used.",
       });
     } finally {
       setJoinSubmitting(false);
@@ -303,7 +256,7 @@ function StudentDashboard() {
     } else {
       workflowStep = {
         title: "Join a Course",
-        desc: "Enter your faculty instructor's join code or email below to request admission to classes.",
+        desc: "Enter your faculty instructor's 6-character join code below to request admission to classes.",
         color: "#67e8f9",
       };
     }
@@ -544,653 +497,645 @@ function StudentDashboard() {
         )}
       </section>
 
-      {/* My Enrolled Classes */}
-      <section
-        style={{
-          ...cardStyle,
-          marginBottom: "25px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
-              📚 My Enrolled Classes
-            </h3>
-            <p style={{ color: "#a5acc5", margin: "4px 0 0", fontSize: "13px" }}>
-              Classes you are actively enrolled in. You can mark attendance during these sessions.
-            </p>
-          </div>
-          <span style={{ fontSize: "12px", color: "#a5acc5" }}>
-            {enrolledClasses.length} active course{enrolledClasses.length === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        {enrolledClasses.length > 0 ? (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-              gap: "16px",
-            }}
-          >
-            {enrolledClasses.map((cls) => (
-              <div
-                key={cls.id}
-                style={{
-                  background: "rgba(255, 255, 255, 0.03)",
-                  border: "1px solid rgba(103, 232, 249, 0.2)",
-                  borderRadius: "12px",
-                  padding: "16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  gap: "14px",
-                }}
-              >
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                    <h4 style={{ margin: 0, fontSize: "16px", color: "#f8fafc", fontWeight: 600 }}>
-                      {cls.name}
-                    </h4>
-                    <span
-                      style={{
-                        background: "rgba(6, 182, 212, 0.18)",
-                        color: "#67e8f9",
-                        padding: "3px 8px",
-                        borderRadius: "8px",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                      }}
-                    >
-                      {cls.code}
-                    </span>
-                  </div>
-
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
-                    {cls.semester} • Instructor: {cls.faculty_name || cls.faculty_email || "Faculty"}
-                  </div>
-
-                  <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                    Enrolled: {new Date(cls.enrolled_at).toLocaleDateString()}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLeaveModalClass(cls);
-                      setLeaveReason("");
-                      setLeaveError("");
-                    }}
-                    style={{
-                      padding: "6px 14px",
-                      borderRadius: "8px",
-                      border: "1px solid rgba(251, 113, 133, 0.4)",
-                      background: "rgba(251, 113, 133, 0.1)",
-                      color: "#fb7185",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      transition: "all 0.2s ease",
-                    }}
-                  >
-                    🚪 Leave Class
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div
-            style={{
-              padding: "24px",
-              textAlign: "center",
-              color: "#94a3b8",
-              fontSize: "13px",
-              background: "rgba(255, 255, 255, 0.02)",
-              borderRadius: "10px",
-            }}
-          >
-            You are not actively enrolled in any courses yet. Use the form below to enter a course join code.
-          </div>
-        )}
-      </section>
-
-      {/* Join Course Form & Pending Requests */}
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-          gap: "25px",
-          marginBottom: "35px",
-        }}
-      >
-        {/* Form: Join a Course */}
-        <div style={cardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
-              ➕ Join a Course
-            </h3>
+      {selectedCourseId ? (
+        /* Course Details View */
+        <section style={{ marginBottom: "35px" }}>
+          {/* Back Navigation Button */}
+          <div style={{ marginBottom: "18px" }}>
             <button
               type="button"
               onClick={() => {
-                setUseEmailFallback(!useEmailFallback);
-                setJoinNotice(null);
+                setSelectedCourseId(null);
+                setCourseDetails(null);
               }}
               style={{
-                background: "transparent",
-                border: "none",
-                color: "#94a3b8",
-                fontSize: "12px",
+                padding: "8px 16px",
+                borderRadius: "8px",
+                border: "1px solid rgba(103, 232, 249, 0.4)",
+                background: "rgba(103, 232, 249, 0.08)",
+                color: "#67e8f9",
+                fontSize: "13px",
+                fontWeight: 600,
                 cursor: "pointer",
-                textDecoration: "underline",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.2s ease",
               }}
             >
-              {useEmailFallback ? "Use Course Code instead" : "Join via Faculty Email instead"}
+              ← Back to Enrolled Courses
             </button>
           </div>
 
-          <p style={{ color: "#a5acc5", fontSize: "13px", margin: "0 0 18px" }}>
-            {useEmailFallback
-              ? "Ask an instructor to add you to their class roster by entering their email address."
-              : "Enter the 6-character random Join Code provided by your course faculty to request admission."}
-          </p>
-
-          {joinNotice && (
-            <div
-              style={{
-                padding: "10px 14px",
-                borderRadius: "8px",
-                fontSize: "13px",
-                marginBottom: "16px",
-                background:
-                  joinNotice.type === "success"
-                    ? "rgba(74, 222, 128, 0.15)"
-                    : "rgba(251, 113, 133, 0.15)",
-                color: joinNotice.type === "success" ? "#4ade80" : "#fb7185",
-                border: `1px solid ${
-                  joinNotice.type === "success"
-                    ? "rgba(74, 222, 128, 0.3)"
-                    : "rgba(251, 113, 133, 0.3)"
-                }`,
-              }}
-            >
-              {joinNotice.text}
+          {loadingCourseDetails ? (
+            <div style={{ ...cardStyle, textAlign: "center", padding: "45px 20px" }}>
+              <div style={{ fontSize: "24px", marginBottom: "10px" }}>⏳</div>
+              <p style={{ color: "#94a3b8", margin: 0, fontSize: "14px" }}>
+                Loading course details and attendance statistics...
+              </p>
             </div>
-          )}
-
-          {!useEmailFallback ? (
-            /* Mode 1: Instant Course Join Code */
-            <form onSubmit={handleSendJoinRequest}>
-              <div style={{ marginBottom: "18px" }}>
-                <label
-                  htmlFor="join-code-input"
-                  style={{
-                    display: "block",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    color: "#cbd5e1",
-                    marginBottom: "8px",
-                  }}
-                >
-                  Enter Course Join Code <span style={{ color: "#fb7185" }}>*</span>
-                </label>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <input
-                    id="join-code-input"
-                    type="text"
-                    required
-                    maxLength={10}
-                    placeholder="e.g. 38KUDF"
-                    value={joinCodeInput}
-                    onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                    style={{
-                      ...inputStyle,
-                      flex: 1,
-                      letterSpacing: "0.2em",
-                      fontSize: "20px",
-                      fontWeight: 700,
-                      textAlign: "center",
-                      textTransform: "uppercase",
-                      background: "rgba(15, 23, 42, 0.8)",
-                      border: "2px solid rgba(103, 232, 249, 0.4)",
-                      padding: "12px 14px",
-                    }}
-                  />
-                </div>
-                <span style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
-                  Ask your faculty instructor for this session's course join code.
-                </span>
-              </div>
-
-              <button
-                type="submit"
-                disabled={joinSubmitting || !joinCodeInput.trim()}
+          ) : courseDetails ? (
+            <>
+              {/* Course Header Banner with corner Leave Class button */}
+              <div
                 style={{
-                  width: "100%",
-                  padding: "13px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: "linear-gradient(135deg, #06b6d4, #6366f1)",
-                  color: "#ffffff",
-                  fontWeight: 700,
-                  fontSize: "14px",
-                  cursor: joinSubmitting || !joinCodeInput.trim() ? "not-allowed" : "pointer",
-                  opacity: joinSubmitting || !joinCodeInput.trim() ? 0.6 : 1,
-                  boxShadow: "0 4px 14px rgba(6, 182, 212, 0.3)",
+                  ...cardStyle,
+                  marginBottom: "25px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: "16px",
                 }}
               >
-                {joinSubmitting ? "Sending Request..." : "🚀 Send Admission Request via Code"}
-              </button>
-            </form>
-          ) : (
-            /* Mode 2: Via Faculty Email (Fallback) */
-            <>
-              {instructors.length > 0 && (
-                <div style={{ marginBottom: "16px" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                    <span
+                      style={{
+                        background: "rgba(6, 182, 212, 0.2)",
+                        color: "#67e8f9",
+                        padding: "4px 10px",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                        fontWeight: 700,
+                        letterSpacing: "0.05em",
+                      }}
+                    >
+                      {courseDetails.course.code}
+                    </span>
+                    <span style={{ color: "#94a3b8", fontSize: "13px" }}>
+                      {courseDetails.course.semester}
+                    </span>
+                  </div>
+                  <h2 style={{ fontSize: "26px", margin: "0 0 8px", fontWeight: 700, color: "#f8fafc" }}>
+                    {courseDetails.course.name}
+                  </h2>
+                  <p style={{ color: "#a5acc5", margin: 0, fontSize: "14px" }}>
+                    Instructor: <strong style={{ color: "#e2e8f0" }}>{courseDetails.course.faculty_name || "Faculty"}</strong> ({courseDetails.course.faculty_email})
+                  </p>
+                </div>
+
+                {/* Corner Leave Class Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentCls = enrolledClasses.find((c) => c.id === selectedCourseId) || {
+                      id: courseDetails.course.id,
+                      name: courseDetails.course.name,
+                      code: courseDetails.course.code,
+                    };
+                    setLeaveModalClass(currentCls);
+                    setLeaveReason("");
+                    setLeaveError("");
+                  }}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(251, 113, 133, 0.4)",
+                    background: "rgba(251, 113, 133, 0.1)",
+                    color: "#fb7185",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  🚪 Leave Class
+                </button>
+              </div>
+
+              {/* Course-Specific Attendance Analytics Cards */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: "20px",
+                  marginBottom: "25px",
+                }}
+              >
+                <div style={cardStyle}>
+                  <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Course Sessions</p>
+                  <h2 style={{ fontSize: "34px", margin: "10px 0", fontWeight: 700 }}>
+                    {courseDetails.analytics.total_classes}
+                  </h2>
+                  <p style={{ color: "#67e8f9", marginBottom: 0, fontSize: "12px" }}>
+                    Conducted in this course
+                  </p>
+                </div>
+
+                <div style={cardStyle}>
+                  <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Sessions Attended</p>
+                  <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#4ade80", fontWeight: 700 }}>
+                    {courseDetails.analytics.classes_attended}
+                  </h2>
+                  <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "12px" }}>
+                    Verified present
+                  </p>
+                </div>
+
+                <div style={cardStyle}>
+                  <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Sessions Missed</p>
+                  <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#fb7185", fontWeight: 700 }}>
+                    {courseDetails.analytics.classes_missed}
+                  </h2>
+                  <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "12px" }}>
+                    Absent or unverified
+                  </p>
+                </div>
+
+                <div style={cardStyle}>
+                  <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Course Attendance Rate</p>
+                  <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#67e8f9", fontWeight: 700 }}>
+                    {courseDetails.analytics.percentage}%
+                  </h2>
                   <div
                     style={{
-                      fontSize: "12px",
-                      color: "#94a3b8",
-                      marginBottom: "8px",
-                      fontWeight: 600,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.05em",
+                      height: "7px",
+                      background: "#303650",
+                      borderRadius: "10px",
+                      overflow: "hidden",
                     }}
                   >
-                    Available Instructors (Click to select):
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, courseDetails.analytics.percentage))}%`,
+                        height: "100%",
+                        background: "linear-gradient(90deg, #06b6d4, #818cf8)",
+                        borderRadius: "10px",
+                        transition: "width 0.4s ease",
+                      }}
+                    />
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                    {instructors.map((inst) => {
-                      const defaultCourse = inst.courses && inst.courses.length > 0 ? inst.courses[0] : null;
-                      const isSelected = facultyEmail.toLowerCase() === inst.email.toLowerCase();
+                </div>
+              </div>
 
-                      return (
-                        <button
-                          key={inst.id}
-                          type="button"
-                          onClick={() => {
-                            setFacultyEmail(inst.email);
-                            if (defaultCourse) {
-                              setCourseCode(defaultCourse.code);
-                            }
-                          }}
+              {/* Late Enrollment & Corrections Explainer Box */}
+              <div
+                style={{
+                  ...cardStyle,
+                  marginBottom: "25px",
+                  background: "rgba(103, 232, 249, 0.05)",
+                  border: "1px solid rgba(103, 232, 249, 0.25)",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "12px",
+                }}
+              >
+                <span style={{ fontSize: "20px" }}>💡</span>
+                <div style={{ fontSize: "13px", lineHeight: "1.5", color: "#cbd5e1" }}>
+                  <strong style={{ color: "#67e8f9" }}>Joined after sessions began?</strong>
+                  <br />
+                  If you enrolled in this course late, prior sessions are initially recorded as missed. Your instructor can easily mark your attendance for those past sessions using the <strong>Attendance Corrections</strong> feature on their session dashboard.
+                </div>
+              </div>
+
+              {/* Course Attendance Records Table */}
+              <div style={cardStyle}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+                      📋 Course Attendance Records
+                    </h3>
+                    <p style={{ color: "#a5acc5", margin: "4px 0 0", fontSize: "13px" }}>
+                      Individual session logs for {courseDetails.course.name}
+                    </p>
+                  </div>
+                  <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+                    {courseDetails.sessions?.length || 0} session(s)
+                  </span>
+                </div>
+
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "550px", textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ color: "#67e8f9", fontSize: "13px" }}>
+                        <th style={{ padding: "12px 10px" }}>Date & Time</th>
+                        <th style={{ padding: "12px 10px" }}>Session / Room</th>
+                        <th style={{ padding: "12px 10px" }}>Verification Source</th>
+                        <th style={{ padding: "12px 10px" }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {courseDetails.sessions && courseDetails.sessions.length > 0 ? (
+                        courseDetails.sessions.map((sess) => {
+                          const isPresent = sess.status === "present";
+                          return (
+                            <tr
+                              key={sess.id}
+                              style={{ borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: "14px" }}
+                            >
+                              <td style={{ padding: "14px 10px", color: "#f8fafc", fontWeight: 500 }}>
+                                {sess.date} {sess.time ? `• ${sess.time}` : ""}
+                              </td>
+                              <td style={{ padding: "14px 10px", color: "#cbd5e1" }}>
+                                {sess.room ? `Room ${sess.room}` : "Lecture Hall"}
+                              </td>
+                              <td style={{ padding: "14px 10px" }}>
+                                <span
+                                  style={{
+                                    fontSize: "12px",
+                                    padding: "4px 8px",
+                                    borderRadius: "6px",
+                                    background:
+                                      sess.source === "correction"
+                                        ? "rgba(168, 85, 247, 0.15)"
+                                        : sess.source === "override"
+                                        ? "rgba(251, 191, 36, 0.15)"
+                                        : isPresent
+                                        ? "rgba(6, 182, 212, 0.15)"
+                                        : "rgba(148, 163, 184, 0.1)",
+                                    color:
+                                      sess.source === "correction"
+                                        ? "#c084fc"
+                                        : sess.source === "override"
+                                        ? "#fbbf24"
+                                        : isPresent
+                                        ? "#67e8f9"
+                                        : "#94a3b8",
+                                  }}
+                                >
+                                  {sess.source === "correction"
+                                    ? "Attendance Correction"
+                                    : sess.source === "override"
+                                    ? "Faculty Override"
+                                    : isPresent
+                                    ? "Facial + QR Scan"
+                                    : "Not Logged"}
+                                </span>
+                              </td>
+                              <td style={{ padding: "14px 10px" }}>
+                                <span
+                                  style={{
+                                    color: isPresent ? "#4ade80" : "#fb7185",
+                                    background: isPresent ? "rgba(74,222,128,0.12)" : "rgba(251,113,133,0.12)",
+                                    padding: "5px 12px",
+                                    borderRadius: "20px",
+                                    fontSize: "12px",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {isPresent ? "● Present" : "○ Absent"}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={4} style={{ padding: "30px 10px", textAlign: "center", color: "#9ca3af", fontSize: "13px" }}>
+                            No sessions have been conducted for this course yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={{ ...cardStyle, textAlign: "center", padding: "30px" }}>
+              <p style={{ color: "#fb7185" }}>Could not load course details. Please try again.</p>
+              <button
+                type="button"
+                onClick={() => loadCourseDetails(selectedCourseId)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#0284c7",
+                  color: "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+        </section>
+      ) : (
+        /* Main Dashboard View */
+        <>
+          {/* My Enrolled Classes */}
+          <section
+            style={{
+              ...cardStyle,
+              marginBottom: "25px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+                  📚 My Enrolled Classes
+                </h3>
+                <p style={{ color: "#a5acc5", margin: "4px 0 0", fontSize: "13px" }}>
+                  Classes you are actively enrolled in. Click &quot;View Details&quot; to review your attendance records for that course.
+                </p>
+              </div>
+              <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+                {enrolledClasses.length} active course{enrolledClasses.length === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            {enrolledClasses.length > 0 ? (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+                  gap: "16px",
+                }}
+              >
+                {enrolledClasses.map((cls) => (
+                  <div
+                    key={cls.id}
+                    style={{
+                      background: "rgba(255, 255, 255, 0.03)",
+                      border: "1px solid rgba(103, 232, 249, 0.2)",
+                      borderRadius: "12px",
+                      padding: "18px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      gap: "14px",
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                        <h4 style={{ margin: 0, fontSize: "16px", color: "#f8fafc", fontWeight: 600 }}>
+                          {cls.name}
+                        </h4>
+                        <span
                           style={{
-                            padding: "7px 12px",
-                            borderRadius: "20px",
-                            border: isSelected
-                              ? "1px solid #67e8f9"
-                              : "1px solid rgba(255,255,255,0.15)",
-                            background: isSelected
-                              ? "rgba(103, 232, 249, 0.18)"
-                              : "rgba(255,255,255,0.05)",
-                            color: isSelected ? "#67e8f9" : "#e2e8f0",
-                            fontSize: "12px",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            transition: "all 0.2s ease",
+                            background: "rgba(6, 182, 212, 0.18)",
+                            color: "#67e8f9",
+                            padding: "3px 8px",
+                            borderRadius: "8px",
+                            fontSize: "11px",
+                            fontWeight: 700,
                           }}
                         >
-                          <span>👤 {inst.name}</span>
-                          <span style={{ color: "#94a3b8", fontSize: "11px" }}>({inst.email})</span>
-                          {defaultCourse && (
-                            <span
-                              style={{
-                                background: "rgba(99, 102, 241, 0.25)",
-                                color: "#a5b4fc",
-                                padding: "2px 7px",
-                                borderRadius: "10px",
-                                fontSize: "11px",
-                                fontWeight: 600,
-                              }}
-                            >
-                              {defaultCourse.code}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                          {cls.code}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                        {cls.semester} • Instructor: {cls.faculty_name || cls.faculty_email || "Faculty"}
+                      </div>
+
+                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                        Enrolled: {new Date(cls.enrolled_at).toLocaleDateString()}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      {/* View Details button replaces old Leave Class button */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCourseId(cls.id)}
+                        style={{
+                          padding: "8px 16px",
+                          borderRadius: "8px",
+                          border: "1px solid rgba(103, 232, 249, 0.4)",
+                          background: "rgba(103, 232, 249, 0.12)",
+                          color: "#67e8f9",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          transition: "all 0.2s ease",
+                        }}
+                      >
+                        📊 View Details
+                      </button>
+                    </div>
                   </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "24px",
+                  textAlign: "center",
+                  color: "#94a3b8",
+                  fontSize: "13px",
+                  background: "rgba(255, 255, 255, 0.02)",
+                  borderRadius: "10px",
+                }}
+              >
+                You are not actively enrolled in any courses yet. Use the form below to enter a course join code.
+              </div>
+            )}
+          </section>
+
+          {/* Join Course Form & Pending Requests (Join via faculty email removed) */}
+          <section
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
+              gap: "25px",
+              marginBottom: "35px",
+            }}
+          >
+            {/* Form: Join a Course via Join Code */}
+            <div style={cardStyle}>
+              <div style={{ marginBottom: "8px" }}>
+                <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+                  ➕ Join a Course
+                </h3>
+              </div>
+
+              <p style={{ color: "#a5acc5", fontSize: "13px", margin: "0 0 18px" }}>
+                Enter the 6-character random Join Code provided by your course faculty to request admission.
+              </p>
+
+              {joinNotice && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                    marginBottom: "16px",
+                    background:
+                      joinNotice.type === "success"
+                        ? "rgba(74, 222, 128, 0.15)"
+                        : "rgba(251, 113, 133, 0.15)",
+                    color: joinNotice.type === "success" ? "#4ade80" : "#fb7185",
+                    border: `1px solid ${
+                      joinNotice.type === "success"
+                        ? "rgba(74, 222, 128, 0.3)"
+                        : "rgba(251, 113, 133, 0.3)"
+                    }`,
+                  }}
+                >
+                  {joinNotice.text}
                 </div>
               )}
 
               <form onSubmit={handleSendJoinRequest}>
-                <div style={{ marginBottom: "14px" }}>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "13px",
-                      color: "#cbd5e1",
-                      marginBottom: "6px",
-                    }}
-                  >
-                    Faculty Email Address <span style={{ color: "#fb7185" }}>*</span>
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    list="registered-faculty-list"
-                    placeholder="faculty@example.com"
-                    value={facultyEmail}
-                    onChange={(e) => setFacultyEmail(e.target.value)}
-                    style={{ ...inputStyle, width: "100%" }}
-                  />
-                  <datalist id="registered-faculty-list">
-                    {instructors.map((inst) => (
-                      <option key={inst.id} value={inst.email}>
-                        {inst.name} ({inst.courses?.map((c) => c.code).join(", ") || "No courses"})
-                      </option>
-                    ))}
-                  </datalist>
-                </div>
-
                 <div style={{ marginBottom: "18px" }}>
                   <label
+                    htmlFor="join-code-input"
                     style={{
                       display: "block",
                       fontSize: "13px",
+                      fontWeight: 600,
                       color: "#cbd5e1",
-                      marginBottom: "6px",
+                      marginBottom: "8px",
                     }}
                   >
-                    Course Code (Optional, e.g. CS101)
+                    Enter Course Join Code <span style={{ color: "#fb7185" }}>*</span>
                   </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. CS101 or leave blank"
-                    value={courseCode}
-                    onChange={(e) => setCourseCode(e.target.value)}
-                    style={{ ...inputStyle, width: "100%" }}
-                  />
+                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                    <input
+                      id="join-code-input"
+                      type="text"
+                      required
+                      maxLength={10}
+                      placeholder="e.g. 38KUDF"
+                      value={joinCodeInput}
+                      onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                      style={{
+                        ...inputStyle,
+                        flex: 1,
+                        letterSpacing: "0.2em",
+                        fontSize: "20px",
+                        fontWeight: 700,
+                        textAlign: "center",
+                        textTransform: "uppercase",
+                        background: "rgba(15, 23, 42, 0.8)",
+                        border: "2px solid rgba(103, 232, 249, 0.4)",
+                        padding: "12px 14px",
+                      }}
+                    />
+                  </div>
+                  <span style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                    Ask your faculty instructor for this course&apos;s join code.
+                  </span>
                 </div>
 
                 <button
                   type="submit"
-                  disabled={joinSubmitting}
+                  disabled={joinSubmitting || !joinCodeInput.trim()}
                   style={{
                     width: "100%",
-                    padding: "12px",
+                    padding: "13px",
                     borderRadius: "8px",
                     border: "none",
                     background: "linear-gradient(135deg, #06b6d4, #6366f1)",
                     color: "#ffffff",
-                    fontWeight: 600,
+                    fontWeight: 700,
                     fontSize: "14px",
-                    cursor: joinSubmitting ? "not-allowed" : "pointer",
-                    opacity: joinSubmitting ? 0.7 : 1,
+                    cursor: joinSubmitting || !joinCodeInput.trim() ? "not-allowed" : "pointer",
+                    opacity: joinSubmitting || !joinCodeInput.trim() ? 0.6 : 1,
+                    boxShadow: "0 4px 14px rgba(6, 182, 212, 0.3)",
                   }}
                 >
-                  {joinSubmitting ? "Sending Request..." : "Send Join Request"}
+                  {joinSubmitting ? "Sending Request..." : "🚀 Send Admission Request via Code"}
                 </button>
               </form>
-            </>
-          )}
-        </div>
+            </div>
 
-        {/* List: My Join Requests */}
-        <div style={cardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
-            <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
-              📋 My Course Join Requests
-            </h3>
-            <span style={{ fontSize: "12px", color: "#a5acc5" }}>
-              {joinRequests.length} total
-            </span>
-          </div>
+            {/* List: My Join Requests */}
+            <div style={cardStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+                <h3 style={{ margin: 0, fontSize: "18px", color: "#67e8f9" }}>
+                  📋 My Course Join Requests
+                </h3>
+                <span style={{ fontSize: "12px", color: "#a5acc5" }}>
+                  {joinRequests.length} total
+                </span>
+              </div>
 
-          <div style={{ maxHeight: "290px", overflowY: "auto" }}>
-            {joinRequests.length > 0 ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                {joinRequests.map((req) => {
-                  const statusColors = {
-                    pending: { bg: "rgba(251, 191, 36, 0.15)", text: "#fbbf24" },
-                    approved: { bg: "rgba(74, 222, 128, 0.15)", text: "#4ade80" },
-                    rejected: { bg: "rgba(251, 113, 133, 0.15)", text: "#fb7185" },
-                    cancelled: { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" },
-                  };
-                  const color = statusColors[req.status] || statusColors.pending;
+              <div style={{ maxHeight: "290px", overflowY: "auto" }}>
+                {joinRequests.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {joinRequests.map((req) => {
+                      const statusColors = {
+                        pending: { bg: "rgba(251, 191, 36, 0.15)", text: "#fbbf24" },
+                        approved: { bg: "rgba(74, 222, 128, 0.15)", text: "#4ade80" },
+                        rejected: { bg: "rgba(251, 113, 133, 0.15)", text: "#fb7185" },
+                        cancelled: { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" },
+                      };
+                      const color = statusColors[req.status] || statusColors.pending;
 
-                  return (
-                    <div
-                      key={req.id}
-                      style={{
-                        padding: "12px 14px",
-                        borderRadius: "10px",
-                        background: "rgba(255,255,255,0.03)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: "10px",
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: "14px" }}>
-                          {req.faculty_name || req.faculty_email}
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                          {req.faculty_email} {req.course_code ? `• Code: ${req.course_code}` : ""} {req.class_name ? `• ${req.class_name}` : ""}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
-                          Requested: {new Date(req.created_at).toLocaleDateString()}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span
+                      return (
+                        <div
+                          key={req.id}
                           style={{
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            padding: "3px 8px",
-                            borderRadius: "12px",
-                            background: color.bg,
-                            color: color.text,
-                            textTransform: "capitalize",
+                            padding: "12px 14px",
+                            borderRadius: "10px",
+                            background: "rgba(255,255,255,0.03)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "10px",
                           }}
                         >
-                          {req.status}
-                        </span>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                              {req.faculty_name || req.faculty_email}
+                            </div>
+                            <div style={{ fontSize: "12px", color: "#9ca3af" }}>
+                              {req.faculty_email} {req.course_code ? `• Code: ${req.course_code}` : ""} {req.class_name ? `• ${req.class_name}` : ""}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                              Requested: {new Date(req.created_at).toLocaleDateString()}
+                            </div>
+                          </div>
 
-                        {req.status === "pending" && (
-                          <button
-                            type="button"
-                            disabled={cancellingId === req.id}
-                            onClick={() => handleCancelRequest(req.id)}
-                            style={{
-                              padding: "4px 8px",
-                              fontSize: "11px",
-                              borderRadius: "6px",
-                              border: "1px solid rgba(251, 113, 133, 0.4)",
-                              background: "rgba(251, 113, 133, 0.1)",
-                              color: "#fb7185",
-                              cursor: "pointer",
-                            }}
-                          >
-                            {cancellingId === req.id ? "..." : "Cancel"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span
+                              style={{
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                padding: "3px 8px",
+                                borderRadius: "12px",
+                                background: color.bg,
+                                color: color.text,
+                                textTransform: "capitalize",
+                              }}
+                            >
+                              {req.status}
+                            </span>
+
+                            {req.status === "pending" && (
+                              <button
+                                type="button"
+                                disabled={cancellingId === req.id}
+                                onClick={() => handleCancelRequest(req.id)}
+                                style={{
+                                  padding: "4px 8px",
+                                  fontSize: "11px",
+                                  borderRadius: "6px",
+                                  border: "1px solid rgba(251, 113, 133, 0.4)",
+                                  background: "rgba(251, 113, 133, 0.1)",
+                                  color: "#fb7185",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {cancellingId === req.id ? "..." : "Cancel"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p style={{ color: "#9ca3af", fontSize: "13px", padding: "20px 0", textAlign: "center" }}>
+                    No join requests sent yet. Use the form on the left to enter your instructor&apos;s course join code.
+                  </p>
+                )}
               </div>
-            ) : (
-              <p style={{ color: "#9ca3af", fontSize: "13px", padding: "20px 0", textAlign: "center" }}>
-                No join requests sent yet. Use the form on the left to request course admission.
-              </p>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Attendance Summary Cards */}
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: "20px",
-          marginBottom: "35px",
-        }}
-      >
-        <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Total Classes</p>
-          <h2 style={{ fontSize: "34px", margin: "10px 0", fontWeight: 700 }}>
-            {metrics.totalClasses}
-          </h2>
-          <p style={{ color: "#67e8f9", marginBottom: 0, fontSize: "13px" }}>
-            Conducted sessions
-          </p>
-        </div>
-
-        <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Classes Attended</p>
-          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#4ade80", fontWeight: 700 }}>
-            {metrics.classesAttended}
-          </h2>
-          <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "13px" }}>
-            Verified present
-          </p>
-        </div>
-
-        <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>Classes Missed</p>
-          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#fb7185", fontWeight: 700 }}>
-            {metrics.classesMissed}
-          </h2>
-          <p style={{ color: "#a5acc5", marginBottom: 0, fontSize: "13px" }}>
-            Absent / unverified
-          </p>
-        </div>
-
-        <div style={cardStyle}>
-          <p style={{ color: "#a5acc5", marginTop: 0, fontSize: "13px" }}>
-            Attendance Percentage
-          </p>
-          <h2 style={{ fontSize: "34px", margin: "10px 0", color: "#67e8f9", fontWeight: 700 }}>
-            {metrics.percentage}%
-          </h2>
-          <div
-            style={{
-              height: "7px",
-              background: "#303650",
-              borderRadius: "10px",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${Math.min(100, Math.max(0, metrics.percentage))}%`,
-                height: "100%",
-                background: "linear-gradient(90deg, #06b6d4, #818cf8)",
-                borderRadius: "10px",
-                transition: "width 0.4s ease",
-              }}
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* Attendance History */}
-      <section style={cardStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "20px" }}>
-          <div>
-            <h2 style={{ marginTop: 0, marginBottom: "6px", fontSize: "20px" }}>
-              Attendance History
-            </h2>
-            <p style={{ color: "#a5acc5", margin: 0, fontSize: "13px" }}>
-              Verified biometric and session attendance records from the server
-            </p>
-          </div>
-
-          <span style={{ fontSize: "12px", color: "#a5acc5" }}>
-            {records.length} record(s) logged
-          </span>
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              minWidth: "500px",
-              textAlign: "left",
-            }}
-          >
-            <thead>
-              <tr style={{ color: "#67e8f9", fontSize: "13px" }}>
-                <th style={{ padding: "12px 10px" }}>Subject</th>
-                <th style={{ padding: "12px 10px" }}>Code</th>
-                <th style={{ padding: "12px 10px" }}>Date & Time</th>
-                <th style={{ padding: "12px 10px" }}>Verification Type</th>
-                <th style={{ padding: "12px 10px" }}>Status</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {records.length > 0 ? (
-                records.map((item) => (
-                  <tr
-                    key={item.id}
-                    style={{ borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: "14px" }}
-                  >
-                    <td style={{ padding: "14px 10px", fontWeight: 500 }}>{item.subject}</td>
-                    <td style={{ padding: "14px 10px", color: "#a5acc5" }}>{item.code}</td>
-                    <td style={{ padding: "14px 10px", color: "#a5acc5" }}>
-                      {item.date} {item.time ? `• ${item.time}` : ""}
-                    </td>
-                    <td style={{ padding: "14px 10px" }}>
-                      <span
-                        style={{
-                          fontSize: "12px",
-                          background: item.source === "override" ? "rgba(251, 191, 36, 0.15)" : "rgba(6, 182, 212, 0.15)",
-                          color: item.source === "override" ? "#fbbf24" : "#67e8f9",
-                          padding: "4px 8px",
-                          borderRadius: "6px",
-                        }}
-                      >
-                        {item.source === "override" ? "Faculty Override" : "Facial + QR Scan"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "14px 10px" }}>
-                      <span
-                        style={{
-                          color: "#4ade80",
-                          background: "rgba(74,222,128,0.12)",
-                          padding: "5px 12px",
-                          borderRadius: "20px",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                        }}
-                      >
-                        ● {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td
-                    colSpan={5}
-                    style={{
-                      padding: "30px 10px",
-                      textAlign: "center",
-                      color: "#9ca3af",
-                      fontSize: "14px",
-                    }}
-                  >
-                    {loading
-                      ? "Fetching records..."
-                      : "No attendance records recorded yet. Once enrolled in a class, click 'Scan QR / Mark Attendance' during class sessions."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            </div>
+          </section>
+        </>
+      )}
 
       {/* Leave Class Confirmation Modal */}
       {leaveModalClass && (

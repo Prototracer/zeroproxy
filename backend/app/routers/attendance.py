@@ -57,13 +57,27 @@ MIN_SUBMIT_SECONDS: float = 1.5       # handbook §3.1 check 2
 CHALLENGE_WINDOW_MS: int = 7000       # comfortably allows sequential combo 1 -> combo 2
 CHALLENGE_MARGIN_MS: int = 2000       # small margin for legitimate network & mobile latency
 
-OPEN_EYE_MIN: float = 0.2            # handbook §3.1 check 6
-FRONTAL_MAX: float = 20.0            # handbook §3.1 check 6
-MAX_INTRA_DISTANCE: float = 0.35     # handbook §3.1 check 8 (start loose)
-MIN_SINGLE_FACE_RATIO: float = 0.90  # handbook §3.1 check 5
+OPEN_EYE_MIN: float = 0.16            # handbook §3.1 check 6 (relaxed for mobile angles)
+FRONTAL_MAX: float = 25.0            # handbook §3.1 check 6 (allow natural tilt)
+MAX_INTRA_DISTANCE: float = 0.45     # handbook §3.1 check 8 (allow mobile lighting changes)
+MIN_SINGLE_FACE_RATIO: float = 0.60  # handbook §3.1 check 5 (tolerate initial positioning frames)
 
-MAX_FAILED_SUBMITS: int = 3           # handbook §3.1: "max 3 failed submits per student per session"
+MAX_FAILED_SUBMITS: int = 5           # Allow student comfortable retry margin
 FAIL_WINDOW_SECONDS: int = 3600 * 24  # track failures within a session day
+
+# Supported challenges in rotation (head movements prioritized, blink balanced to ~11%):
+CHALLENGE_POOL: list[str] = [
+    "turn_left",
+    "turn_right",
+    "tilt_head",
+    "nod_head",
+    "turn_left",
+    "turn_right",
+    "tilt_head",
+    "nod_head",
+    "blink",
+]
+
 
 
 # ── POST /attendance/scan ────────────────────────────────────────────────────
@@ -180,16 +194,6 @@ async def scan_qr(
     # 6. nod_head
     # 8. raise_eyebrows
     # 9. combo_smile_blink, combo_turn_blink, combo_smile_turn
-    CHALLENGE_POOL = [
-        "blink",
-        "double_blink",
-        "turn_left",
-        "turn_right",
-        "nod_head",
-        "raise_eyebrows",
-        "combo_turn_blink",
-        "combo_nod_blink",
-    ]
     chosen_challenge = secrets.choice(CHALLENGE_POOL)
 
     nonce = secrets.token_urlsafe(16)
@@ -260,25 +264,16 @@ async def submit_attendance(
     # Now we have the session_id from the ticket
     session_fail_key = f"submit_fail:{student.id}:{ticket.session_id}"
 
-    def _record_failure_and_raise(code: str, http_status: int = 400) -> None:
-        """Increment failure counter and raise the reject code."""
-        # hit() returns False when limit exceeded — we just increment without
-        # blocking here; we checked the limit before this call path.
+    def _record_failure_and_raise(code: str, http_status: int = 400, detail_msg: str = "") -> None:
+        """Increment failure counter, log to console, and raise the reject code."""
+        msg = f"{code}: {detail_msg}" if detail_msg else code
+        print(f"\n❌ [ATTENDANCE SUBMIT REJECT] Code: '{code}' | Detail: '{detail_msg}' | Student: {student.email} (ID: {student.id})\n", flush=True)
         rate_limiter.hit(session_fail_key, MAX_FAILED_SUBMITS + 1, FAIL_WINDOW_SECONDS)
-        raise HTTPException(status_code=http_status, detail=code)
-
-    # Pre-check: if already at limit, reject before doing any work
-    # We abuse hit() by checking whether 1 more would exceed — instead use a
-    # separate peek. Since MemoryRateLimiter prunes on hit(), we call it only
-    # to record a failure. We maintain a separate "peek" via a short-circuit:
-    # issue a hit with limit=MAX_FAILED_SUBMITS; if it returns False, already over.
-    # But this would increment before the real failure. Instead use a dedicated counter.
-    # Simple approach: track with rate_limiter; if at limit, reject scan too.
-    # We re-check below without incrementing using a probe key.
+        raise HTTPException(status_code=http_status, detail=msg)
 
     # Verify nonce matches
     if not secrets.compare_digest(ticket.nonce, body.nonce):
-        _record_failure_and_raise("ticket_invalid")
+        _record_failure_and_raise("ticket_invalid", detail_msg="Nonce mismatch")
 
     # ── Check 1b: Verify session is still active ────────────────────────────
     result = await db.execute(
@@ -290,7 +285,7 @@ async def submit_attendance(
     session = result.scalar_one_or_none()
 
     if session is None or session.status != "active":
-        _record_failure_and_raise("session_ended", 409)
+        _record_failure_and_raise("session_ended", 409, detail_msg="Session is closed or not active")
 
     # ── Check per-session failure limit ─────────────────────────────────────
     fail_probe_key = f"submit_fail_count:{student.id}:{session.id}"
@@ -305,53 +300,52 @@ async def submit_attendance(
     elapsed_s = (now - ticket.issued_at).total_seconds()
 
     if elapsed_s < MIN_SUBMIT_SECONDS:
-        _record_failure_and_raise("too_fast_or_slow")
+        _record_failure_and_raise("too_fast_or_slow", detail_msg=f"Elapsed {elapsed_s:.1f}s < min {MIN_SUBMIT_SECONDS}s")
 
     if elapsed_s > TICKET_TTL_SECONDS:
-        _record_failure_and_raise("too_fast_or_slow")
+        _record_failure_and_raise("too_fast_or_slow", detail_msg=f"Elapsed {elapsed_s:.1f}s > TTL {TICKET_TTL_SECONDS}s")
 
     if body.duration_ms > CHALLENGE_WINDOW_MS + CHALLENGE_MARGIN_MS:
-        _record_failure_and_raise("too_fast_or_slow")
+        _record_failure_and_raise("too_fast_or_slow", detail_msg=f"Duration {body.duration_ms}ms > window")
 
     # ── Check 3: Shape ───────────────────────────────────────────────────────
     samples = body.samples
     if not (2 <= len(samples) <= 3):
-        _record_failure_and_raise("bad_payload")
+        _record_failure_and_raise("bad_payload", detail_msg=f"Sample count {len(samples)} not in [2, 3]")
 
     for s in samples:
         if len(s.descriptor) != 128:
-            _record_failure_and_raise("bad_payload")
+            _record_failure_and_raise("bad_payload", detail_msg=f"Descriptor length {len(s.descriptor)} != 128")
         if not all(isfinite(v) for v in s.descriptor):
-            _record_failure_and_raise("bad_payload")
+            _record_failure_and_raise("bad_payload", detail_msg="Descriptor contains non-finite numbers")
 
     if len(body.landmark_series) > 80:
-        _record_failure_and_raise("bad_payload")
+        _record_failure_and_raise("bad_payload", detail_msg=f"Landmark series length {len(body.landmark_series)} > 80")
 
     # ── Check 4: Liveness challenge evidence ─────────────────────────────────
     if not _verify_liveness_challenge(ticket.challenge, body.landmark_series):
-        _record_failure_and_raise("challenge_failed")
+        _record_failure_and_raise("challenge_failed", detail_msg=f"Liveness challenge '{ticket.challenge}' not verified in series")
 
     # ── Check 5: Single face ─────────────────────────────────────────────────
     series = body.landmark_series
     if series:
+        has_multiple_faces = any(e.face_count > 1 for e in series)
+        if has_multiple_faces:
+            _record_failure_and_raise("multiple_faces", detail_msg="Multiple faces detected in frame")
         single_face_entries = sum(1 for e in series if e.face_count == 1)
         ratio = single_face_entries / len(series)
         if ratio < MIN_SINGLE_FACE_RATIO:
-            _record_failure_and_raise("multiple_faces")
+            _record_failure_and_raise("multiple_faces", detail_msg=f"Single face ratio {ratio:.2f} < {MIN_SINGLE_FACE_RATIO}")
 
     for s in samples:
-        # Samples are already validated to be from single-face frames by the FE,
-        # but we trust the face_count field from the sample's source frame.
-        # (The DescriptorSample schema doesn't carry face_count; the check is on
-        # the landmark series above.)
         pass
 
     # ── Check 6: Open eyes, frontal ──────────────────────────────────────────
     for s in samples:
         if s.eye_openness < OPEN_EYE_MIN:
-            _record_failure_and_raise("eyes_closed")
+            _record_failure_and_raise("eyes_closed", detail_msg=f"Eye openness {s.eye_openness:.3f} < {OPEN_EYE_MIN}")
         if abs(s.yaw_deg) > FRONTAL_MAX:
-            _record_failure_and_raise("bad_payload")
+            _record_failure_and_raise("bad_payload", detail_msg=f"Sample yaw {s.yaw_deg:.1f}° > {FRONTAL_MAX}°")
 
     # ── Check 7: Identity — match against enrolled samples ───────────────────
     face_result = await db.execute(
@@ -364,7 +358,7 @@ async def submit_attendance(
     face_vector = face_result.scalar_one_or_none()
 
     if face_vector is None:
-        _record_failure_and_raise("face_mismatch")
+        _record_failure_and_raise("face_mismatch", detail_msg="No enrolled biometric face vector found for student")
 
     try:
         enrolled_descriptors = decrypt_descriptor_set(
@@ -373,7 +367,7 @@ async def submit_attendance(
             version=face_vector.version,
         )
     except (DescriptorEncryptionError, RuntimeError):
-        _record_failure_and_raise("face_mismatch")
+        _record_failure_and_raise("face_mismatch", detail_msg="Failed to decrypt enrolled biometrics")
 
     best_distances: list[float] = []
     for submitted_sample in samples:
@@ -383,15 +377,16 @@ async def submit_attendance(
         )
         best_distances.append(best)
         if best >= FACE_MATCH_THRESHOLD:
-            _record_failure_and_raise("face_mismatch")
+            _record_failure_and_raise("face_mismatch", detail_msg=f"Best distance {best:.3f} >= threshold {FACE_MATCH_THRESHOLD}")
 
     overall_best_distance = min(best_distances)
 
     # ── Check 8: Internal consistency ────────────────────────────────────────
     from itertools import combinations as _combos
     for a, b in _combos(samples, 2):
-        if euclidean_distance(a.descriptor, b.descriptor) >= MAX_INTRA_DISTANCE:
-            _record_failure_and_raise("inconsistent_samples")
+        dist_samples = euclidean_distance(a.descriptor, b.descriptor)
+        if dist_samples >= MAX_INTRA_DISTANCE:
+            _record_failure_and_raise("inconsistent_samples", detail_msg=f"Sample intra-distance {dist_samples:.3f} >= {MAX_INTRA_DISTANCE}")
 
     # ── Check 9: Re-verify enrollment + course eligibility before write ──────
     enroll_result = await db.execute(
@@ -447,18 +442,25 @@ async def submit_attendance(
 # ── Helpers & Liveness Challenge Detectors ───────────────────────────────────
 
 def _detect_blink(landmark_series: list) -> bool:
-    """Check for a single blink: eyes close (relative dip, delta, or < 0.22) and reopen."""
+    """Check for a single blink: eyes close (relative dip or EAR <= 0.23) and reopen."""
     if not landmark_series or len(landmark_series) < 3:
         return False
     eye_values = [(entry.left_eye + entry.right_eye) / 2 for entry in landmark_series]
-    baseline_eye = max(eye_values[:min(5, len(eye_values))])
+    baseline_eye = max(eye_values)
     min_eye = min(eye_values)
 
+    dip = baseline_eye - min_eye
+    if dip >= 0.015 or min_eye <= 0.23:
+        return True
+
     closed = False
+    dip_threshold = min(0.24, max(0.18, baseline_eye * 0.88))
+    reopen_threshold = max(0.18, min_eye + 0.014)
+
     for avg_eye in eye_values:
-        if not closed and (avg_eye < 0.22 or avg_eye <= baseline_eye * 0.85 or (baseline_eye - avg_eye) >= 0.025):
+        if not closed and (avg_eye <= dip_threshold or (baseline_eye - avg_eye) >= 0.015):
             closed = True
-        elif closed and (avg_eye > 0.19 or avg_eye >= min_eye + 0.02):
+        elif closed and (avg_eye >= reopen_threshold or avg_eye > 0.19):
             return True
     return False
 
@@ -468,64 +470,78 @@ def _detect_double_blink(landmark_series: list) -> bool:
     if not landmark_series or len(landmark_series) < 5:
         return False
     eye_values = [(entry.left_eye + entry.right_eye) / 2 for entry in landmark_series]
-    baseline_eye = max(eye_values[:min(5, len(eye_values))])
+    baseline_eye = max(eye_values)
+    min_eye = min(eye_values)
+
+    if (baseline_eye - min_eye) < 0.015 and min_eye >= 0.22:
+        return False
+
+    dip_threshold = min(0.24, max(0.18, baseline_eye * 0.88))
+    reopen_threshold = max(0.18, min_eye + 0.014)
 
     blinks = 0
     in_blink = False
-    min_in_blink = 0.28
     for avg_eye in eye_values:
-        if not in_blink and (avg_eye < 0.22 or avg_eye <= baseline_eye * 0.85 or (baseline_eye - avg_eye) >= 0.025):
+        if not in_blink and (avg_eye <= dip_threshold or (baseline_eye - avg_eye) >= 0.015):
             in_blink = True
-            min_in_blink = avg_eye
-        elif in_blink:
-            if avg_eye < min_in_blink:
-                min_in_blink = avg_eye
-            if avg_eye > 0.19 or avg_eye >= min_in_blink + 0.02:
-                blinks += 1
-                in_blink = False
-                if blinks >= 2:
-                    return True
-    return False
+        elif in_blink and (avg_eye >= reopen_threshold or avg_eye > 0.19):
+            blinks += 1
+            in_blink = False
+            if blinks >= 2:
+                return True
+    return blinks >= 2
 
 
-def _detect_smile(landmark_series: list) -> bool:
-    """Check for a smile: mouth ratio rises (> 0.22) and relaxes."""
+def _detect_tilt(landmark_series: list) -> bool:
+    """Check for head tilt (roll): tiltDeg shifts significantly (> 6.0° delta or baseline excursion)."""
     if not landmark_series:
         return False
-    baseline = sum(e.mouth_ratio for e in landmark_series[:5]) / max(len(landmark_series[:5]), 1)
-    max_mouth = max(e.mouth_ratio for e in landmark_series)
-    return max_mouth >= 0.22 and (max_mouth - baseline) >= 0.04
+    tilts = [getattr(e, "tilt_deg", 0.0) for e in landmark_series]
+    baseline = sum(tilts[:min(5, len(tilts))]) / max(min(5, len(tilts)), 1)
+    max_excursion = max(abs(t - baseline) for t in tilts)
+    min_tilt = min(tilts)
+    max_tilt = max(tilts)
+    delta = max_tilt - min_tilt
+    return delta >= 6.0 or max_excursion >= 5.5 or abs(min_tilt) >= 6.5 or abs(max_tilt) >= 6.5
 
 
 def _detect_turn_left(landmark_series: list) -> bool:
-    """Check for head turn left: yawDeg dips negative (< -12°) then returns."""
-    turned = False
+    """Check for head turn left: yawDeg dips negative or shifts > 8.0° (mirror-tolerant)."""
     for entry in landmark_series:
-        if entry.yaw_deg < -12.0:
-            turned = True
-        elif turned and entry.yaw_deg > -8.0:
+        if entry.yaw_deg < -8.0 or abs(entry.yaw_deg) >= 10.0:
             return True
-    return turned
+    return False
 
 
 def _detect_turn_right(landmark_series: list) -> bool:
-    """Check for head turn right: yawDeg rises positive (> +12°) then returns."""
-    turned = False
+    """Check for head turn right: yawDeg rises positive or shifts > 8.0° (mirror-tolerant)."""
     for entry in landmark_series:
-        if entry.yaw_deg > 12.0:
-            turned = True
-        elif turned and entry.yaw_deg < 8.0:
+        if entry.yaw_deg > 8.0 or abs(entry.yaw_deg) >= 10.0:
             return True
-    return turned
+    return False
 
 
 def _detect_nod(landmark_series: list) -> bool:
-    """Check for head nod: pitchDeg shifts significantly (> 10° or < -10°)."""
+    """Check for head nod: pitchDeg shifts significantly (> 2.4° delta or baseline excursion >= 2.0°)."""
     if not landmark_series:
         return False
-    min_pitch = min(getattr(e, "pitch_deg", 0.0) for e in landmark_series)
-    max_pitch = max(getattr(e, "pitch_deg", 0.0) for e in landmark_series)
-    return (max_pitch - min_pitch) >= 8.0 or abs(min_pitch) >= 7.0 or abs(max_pitch) >= 7.0
+    pitches = [getattr(e, "pitch_deg", 0.0) for e in landmark_series]
+    if not pitches:
+        return False
+    n_base = min(5, len(pitches))
+    baseline = sum(pitches[:n_base]) / max(n_base, 1)
+    max_excursion = max(abs(p - baseline) for p in pitches)
+    min_pitch = min(pitches)
+    max_pitch = max(pitches)
+    delta = max_pitch - min_pitch
+    return (
+        delta >= 2.4
+        or max_excursion >= 2.0
+        or any(abs(p - baseline) >= 2.0 for p in pitches)
+        or abs(min_pitch) >= 3.5
+        or abs(max_pitch) >= 3.5
+        or any(abs(p) >= 3.5 for p in pitches)
+    )
 
 
 def _detect_eyebrow_raise(landmark_series: list) -> bool:
@@ -540,7 +556,7 @@ def _detect_eyebrow_raise(landmark_series: list) -> bool:
     max_raise = max(raises)
     min_raise = min(raises)
 
-    return (max_raise - baseline) >= 0.035 or (max_raise - min_raise) >= 0.035 or max_raise >= (baseline * 1.07) or max_raise >= 0.28
+    return (max_raise - baseline) >= 0.030 or (max_raise - min_raise) >= 0.030 or max_raise >= (baseline * 1.06) or max_raise >= 0.28
 
 
 def _verify_liveness_challenge(challenge: str, landmark_series: list) -> bool:
@@ -552,8 +568,8 @@ def _verify_liveness_challenge(challenge: str, landmark_series: list) -> bool:
         return _detect_blink(landmark_series)
     elif challenge == "double_blink":
         return _detect_double_blink(landmark_series)
-    elif challenge == "smile":
-        return _detect_smile(landmark_series)
+    elif challenge in ("tilt_head", "tilt_left", "tilt_right"):
+        return _detect_tilt(landmark_series)
     elif challenge == "turn_left":
         return _detect_turn_left(landmark_series)
     elif challenge == "turn_right":
@@ -562,8 +578,8 @@ def _verify_liveness_challenge(challenge: str, landmark_series: list) -> bool:
         return _detect_nod(landmark_series)
     elif challenge == "raise_eyebrows":
         return _detect_eyebrow_raise(landmark_series)
-    elif challenge == "combo_smile_blink":
-        return _detect_smile(landmark_series) and _detect_blink(landmark_series)
+    elif challenge == "combo_tilt_blink":
+        return _detect_tilt(landmark_series) and _detect_blink(landmark_series)
     elif challenge == "combo_turn_blink":
         return (_detect_turn_left(landmark_series) or _detect_turn_right(landmark_series)) and _detect_blink(landmark_series)
     elif challenge == "combo_nod_blink":

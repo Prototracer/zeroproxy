@@ -7,17 +7,22 @@ import re
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ROLL_NO_PATTERN
 from app.core.deps import require_role
 from app.core.security import hash_password
 from app.db import get_db
+from app.models.attendance_correction import AttendanceCorrection
 from app.models.attendance_log import AttendanceLog
 from app.models.attendance_session import AttendanceSession
 from app.models.audit import AuditEvent
+from app.models.class_enrollment import ClassEnrollment
+from app.models.course import Course
 from app.models.face_vector import FaceVector
+from app.models.join_request import JoinRequest
+from app.models.override import Override
 from app.models.user import User
 from app.schemas.admin import (
     AdminUserListItem,
@@ -504,6 +509,183 @@ async def delete_student_face_data(
     Legacy DPDP endpoint alias for backward compatibility.
     """
     return await purge_biometrics_dpdp(student_id, admin, db)
+
+
+# ── DELETE /admin/users/{user_id} ───────────────────────────────────────────
+
+@router.delete("/admin/users/{user_id}", status_code=status.HTTP_200_OK)
+async def delete_user_permanently(
+    user_id: int,
+    admin: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin permanently deletes a user from institutional records, cleanly purging
+    all associated enrollments, attendance records, biometric descriptors, and tokens.
+    Admin cannot delete their own account.
+    """
+    if user_id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admin cannot delete their own account",
+        )
+
+    user_res = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.tenant_id == admin.tenant_id,
+        )
+    )
+    user = user_res.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # 1. Revoke all refresh tokens
+    refresh_token_store.revoke_all_for_user(user.id)
+
+    # 2. Clean up Biometrics / FaceVectors
+    await db.execute(
+        delete(FaceVector).where(
+            (FaceVector.user_id == user.id) | (FaceVector.approved_by == user.id),
+            FaceVector.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 3. Clean up Class Enrollments
+    await db.execute(
+        delete(ClassEnrollment).where(
+            ClassEnrollment.student_id == user.id,
+            ClassEnrollment.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 4. Clean up Join Requests
+    await db.execute(
+        delete(JoinRequest).where(
+            (JoinRequest.student_id == user.id) | (JoinRequest.faculty_id == user.id) | (JoinRequest.decided_by == user.id),
+            JoinRequest.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 5. Clean up Overrides
+    await db.execute(
+        delete(Override).where(
+            (Override.student_id == user.id) | (Override.actor_id == user.id),
+            Override.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 6. Clean up Attendance Corrections
+    await db.execute(
+        delete(AttendanceCorrection).where(
+            (AttendanceCorrection.student_id == user.id) | (AttendanceCorrection.faculty_id == user.id),
+            AttendanceCorrection.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 7. Clean up Attendance Logs (if student)
+    await db.execute(
+        delete(AttendanceLog).where(
+            AttendanceLog.student_id == user.id,
+            AttendanceLog.tenant_id == admin.tenant_id,
+        )
+    )
+
+    # 8. If faculty: clean up associated courses and sessions
+    if user.role == "faculty":
+        # Find courses taught by faculty
+        c_res = await db.execute(
+            select(Course.id).where(
+                Course.faculty_id == user.id,
+                Course.tenant_id == admin.tenant_id,
+            )
+        )
+        course_ids = list(c_res.scalars().all())
+
+        if course_ids:
+            # Find sessions for these courses
+            s_res = await db.execute(
+                select(AttendanceSession.id).where(
+                    AttendanceSession.course_id.in_(course_ids),
+                    AttendanceSession.tenant_id == admin.tenant_id,
+                )
+            )
+            sess_ids = list(s_res.scalars().all())
+
+            if sess_ids:
+                await db.execute(
+                    delete(AttendanceLog).where(
+                        AttendanceLog.session_id.in_(sess_ids),
+                        AttendanceLog.tenant_id == admin.tenant_id,
+                    )
+                )
+                await db.execute(
+                    delete(AttendanceCorrection).where(
+                        AttendanceCorrection.session_id.in_(sess_ids),
+                        AttendanceCorrection.tenant_id == admin.tenant_id,
+                    )
+                )
+                await db.execute(
+                    delete(Override).where(
+                        Override.session_id.in_(sess_ids),
+                        Override.tenant_id == admin.tenant_id,
+                    )
+                )
+                await db.execute(
+                    delete(AttendanceSession).where(
+                        AttendanceSession.id.in_(sess_ids),
+                        AttendanceSession.tenant_id == admin.tenant_id,
+                    )
+                )
+
+            await db.execute(
+                delete(ClassEnrollment).where(
+                    ClassEnrollment.course_id.in_(course_ids),
+                    ClassEnrollment.tenant_id == admin.tenant_id,
+                )
+            )
+            await db.execute(
+                delete(Course).where(
+                    Course.id.in_(course_ids),
+                    Course.tenant_id == admin.tenant_id,
+                )
+            )
+
+    # 9. Clear actor_id reference in AuditEvent where this user was the actor
+    await db.execute(
+        update(AuditEvent)
+        .where(AuditEvent.actor_id == user.id)
+        .values(actor_id=None)
+    )
+
+    # 10. Record administrative deletion audit event
+    audit = AuditEvent(
+        tenant_id=admin.tenant_id,
+        actor_id=admin.id,
+        action="user_permanently_deleted",
+        target=f"user:{user.id}",
+        meta={
+            "email": user.email,
+            "roll_no": user.roll_no,
+            "name": user.name,
+            "role": user.role,
+        },
+    )
+    db.add(audit)
+
+    # 11. Delete the user
+    user_name = user.name
+    user_email = user.email
+    await db.delete(user)
+    await db.commit()
+
+    return {
+        "id": user_id,
+        "message": f"User {user_name} ({user_email}) has been permanently deleted from records.",
+    }
 
 
 # ── GET /admin/audit ─────────────────────────────────────────────────────────

@@ -364,7 +364,7 @@ export default function JoinRequests() {
               No join requests found
             </p>
             <p style={{ fontSize: '13px', margin: 0 }}>
-              When students type your faculty email address to join, their requests will appear here.
+              When students request admission using your course join codes, their requests will appear here.
             </p>
           </div>
         ) : (

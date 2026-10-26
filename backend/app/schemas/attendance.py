@@ -74,6 +74,7 @@ class LandmarkEntry(BaseModel):
     mouth_ratio: float = Field(alias="mouthRatio")
     yaw_deg: float = Field(alias="yawDeg")
     pitch_deg: float = Field(default=0.0, alias="pitchDeg")
+    tilt_deg: float = Field(default=0.0, alias="tiltDeg")
     eyebrow_raise: float = Field(default=0.0, alias="eyebrowRaise")
     face_count: int = Field(alias="faceCount")
 

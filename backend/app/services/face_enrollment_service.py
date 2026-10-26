@@ -5,7 +5,7 @@ from itertools import combinations
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import FACE_MATCH_THRESHOLD
+from app.config import FACE_MATCH_THRESHOLD, DUPLICATE_FACE_THRESHOLD
 from app.core.encryption import (
     DescriptorEncryptionError,
     decrypt_descriptor_set,
@@ -109,12 +109,16 @@ async def enroll_student(
 
 
     try:
-        # Compare against every other student's active enrollment.
+        # Compare against every other active student's active enrollment.
         result = await db.execute(
-            select(FaceVector).where(
+            select(FaceVector)
+            .join(User, User.id == FaceVector.user_id)
+            .where(
                 FaceVector.tenant_id == tenant_id,
                 FaceVector.active.is_(True),
                 FaceVector.user_id != student.id,
+                User.status == "active",
+                User.role == "student",
             )
         )
         active_enrollments = result.scalars().all()
@@ -133,15 +137,15 @@ async def enroll_student(
                     "An existing enrollment could not be verified"
                 ) from exc
 
-            for proposed in validated:
-                for stored in existing_descriptors:
-                    if (
-                        euclidean_distance(proposed, stored)
-                        < FACE_MATCH_THRESHOLD
-                    ):
-                        raise DuplicateFaceError(
-                            "Face matches another student's active enrollment"
-                        )
+            min_dist = min(
+                euclidean_distance(proposed, stored)
+                for proposed in validated
+                for stored in existing_descriptors
+            )
+            if min_dist < DUPLICATE_FACE_THRESHOLD:
+                raise DuplicateFaceError(
+                    f"Face matches another student's active enrollment (student ID {existing.user_id}, distance {min_dist:.3f} < threshold {DUPLICATE_FACE_THRESHOLD})"
+                )
 
         # Re-enrollment uses the next version and deactivates the old one.
         result = await db.execute(

@@ -31,6 +31,7 @@ def admin_client():
     db.execute = AsyncMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
+    db.delete = AsyncMock()
 
     async def fake_get_db():
         yield db
@@ -417,6 +418,42 @@ def test_admin_correct_user_details_requires_reason(admin_client):
     )
 
     assert response.status_code == 400
+
+
+def test_admin_can_permanently_delete_user(admin_client):
+    test_client, db, admin = admin_client
+
+    user = User(
+        id=55,
+        tenant_id=1,
+        roll_no="STU55",
+        email="stu55@example.com",
+        name="Student Fifty Five",
+        password_hash="hash",
+        role="student",
+        status="active",
+    )
+
+    mock_user = MagicMock()
+    mock_user.scalar_one_or_none.return_value = user
+    db.execute.return_value = mock_user
+
+    response = test_client.delete("/admin/users/55")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 55
+    assert "permanently deleted" in data["message"]
+    db.delete.assert_awaited_with(user)
+    db.commit.assert_awaited()
+
+
+def test_admin_cannot_delete_own_account(admin_client):
+    test_client, db, admin = admin_client
+
+    response = test_client.delete(f"/admin/users/{admin.id}")
+    assert response.status_code == 400
+    assert "cannot delete their own account" in response.json()["detail"]
+
 
 
 

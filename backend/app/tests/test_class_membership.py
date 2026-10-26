@@ -439,3 +439,51 @@ def test_faculty_restore_student_to_class(faculty_user, test_course, student_use
     assert audits[0].action == "student_restored_to_class"
     assert audits[0].actor_id == 20
     db.commit.assert_awaited_once()
+
+
+def test_student_get_class_details(student_user, faculty_user, test_course):
+    enrollment = ClassEnrollment(
+        id=1,
+        tenant_id=1,
+        course_id=test_course.id,
+        student_id=student_user.id,
+        active=True,
+        enrolled_at=datetime.now(timezone.utc),
+    )
+
+    db = MagicMock()
+    db.execute = AsyncMock()
+
+    mock_enroll_res = MagicMock()
+    mock_enroll_res.first.return_value = (test_course, enrollment, faculty_user)
+
+    mock_sess_res = MagicMock()
+    mock_sess_res.scalars.return_value.all.return_value = []
+
+    db.execute.side_effect = [
+        mock_enroll_res,
+        mock_sess_res,
+    ]
+
+    async def fake_get_db():
+        yield db
+
+    async def fake_current_user():
+        return student_user
+
+    app.dependency_overrides[get_db] = fake_get_db
+    app.dependency_overrides[get_current_user] = fake_current_user
+
+    with TestClient(app) as client:
+        response = client.get(f"/student/classes/{test_course.id}/details")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["course"]["id"] == test_course.id
+    assert data["course"]["name"] == test_course.name
+    assert "analytics" in data
+    assert data["analytics"]["total_classes"] == 0
+    assert "records" in data
+

@@ -14,6 +14,7 @@ import StudentAttendanceScanner from './student/StudentAttendanceScanner.jsx';
 import LiveSession from './faculty/LiveSession.jsx';
 import AdminDashboard from './admin/AdminDashboard.jsx';
 import Profile from './student/Profile.jsx';
+import LivenessLabPage from './dev/LivenessLabPage.jsx';
 
 function GlobalCameraGuard() {
   const location = useLocation();
@@ -161,6 +162,9 @@ function App() {
         <Route path="/student/enroll" element={<ProtectedStudentEnroll />} />
         <Route path="/student/scan" element={<ProtectedStudentScan />} />
         <Route path="/camera-test" element={<CameraTest />} />
+        {import.meta.env.DEV && (
+          <Route path="/dev/liveness-lab" element={<LivenessLabPage />} />
+        )}
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </>

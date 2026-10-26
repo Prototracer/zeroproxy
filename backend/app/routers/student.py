@@ -6,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import require_role
 from app.core.rate_limiter import limiter
 from app.db import get_db
+from app.models.attendance_correction import AttendanceCorrection
+from app.models.attendance_log import AttendanceLog
+from app.models.attendance_session import AttendanceSession
 from app.models.audit import AuditEvent
 from app.models.class_enrollment import ClassEnrollment
 from app.models.course import Course
@@ -411,7 +414,7 @@ async def enroll_student_face_self(
     except DuplicateFaceError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="duplicate_face",
+            detail=f"duplicate_face: {exc}",
         ) from exc
     except (EnrollmentDataError, EnrollmentServiceError) as exc:
         raise HTTPException(
@@ -468,6 +471,139 @@ async def list_enrolled_classes(
         )
         for course, enrollment, faculty in rows
     ]
+
+
+@router.get(
+    "/classes/{class_id}/details",
+    status_code=status.HTTP_200_OK,
+)
+async def get_student_class_details(
+    class_id: int,
+    student: User = Depends(require_role("student")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns course info, student's course-specific attendance metrics,
+    and session-by-session attendance history for this course.
+    """
+    query = (
+        select(Course, ClassEnrollment, User)
+        .join(ClassEnrollment, ClassEnrollment.course_id == Course.id)
+        .join(User, User.id == Course.faculty_id)
+        .where(
+            Course.id == class_id,
+            ClassEnrollment.student_id == student.id,
+            ClassEnrollment.tenant_id == student.tenant_id,
+            ClassEnrollment.active.is_(True),
+        )
+    )
+    res = await db.execute(query)
+    row = res.first()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="You are not actively enrolled in this class or class was not found",
+        )
+    course, enrollment, faculty = row
+
+    # All sessions for this course
+    sess_res = await db.execute(
+        select(AttendanceSession).where(
+            AttendanceSession.course_id == course.id,
+            AttendanceSession.tenant_id == student.tenant_id,
+        ).order_by(AttendanceSession.started_at.desc())
+    )
+    sessions = list(sess_res.scalars().all())
+    session_ids = [s.id for s in sessions]
+
+    # Attendance logs for this student
+    logs_by_session = {}
+    if session_ids:
+        logs_res = await db.execute(
+            select(AttendanceLog).where(
+                AttendanceLog.session_id.in_(session_ids),
+                AttendanceLog.student_id == student.id,
+                AttendanceLog.tenant_id == student.tenant_id,
+            )
+        )
+        for l in logs_res.scalars().all():
+            logs_by_session[l.session_id] = l
+
+    # Attendance corrections for this student
+    corr_by_session = {}
+    if session_ids:
+        corr_res = await db.execute(
+            select(AttendanceCorrection).where(
+                AttendanceCorrection.session_id.in_(session_ids),
+                AttendanceCorrection.student_id == student.id,
+                AttendanceCorrection.tenant_id == student.tenant_id,
+            ).order_by(AttendanceCorrection.id.asc())
+        )
+        for c in corr_res.scalars().all():
+            corr_by_session[c.session_id] = c
+
+    records = []
+    attended_count = 0
+
+    for s in sessions:
+        corr = corr_by_session.get(s.id)
+        log = logs_by_session.get(s.id)
+
+        if corr is not None:
+            eff_status = corr.status.lower()
+            source = "correction"
+            reason = corr.reason
+            dt = corr.created_at
+        elif log is not None:
+            eff_status = "present"
+            source = log.source
+            reason = None
+            dt = log.marked_at
+        else:
+            eff_status = "absent"
+            source = "unmarked"
+            reason = "Session missed / late enrollment"
+            dt = s.started_at
+
+        if eff_status == "present":
+            attended_count += 1
+
+        records.append({
+            "session_id": s.id,
+            "status": eff_status.capitalize(),
+            "source": source,
+            "reason": reason,
+            "started_at": s.started_at.isoformat() if s.started_at else None,
+            "date": dt.strftime("%d %b %Y") if dt else "Unknown",
+            "time": dt.strftime("%I:%M %p") if dt else "Unknown",
+        })
+
+    total_classes = len(sessions)
+    missed_count = max(0, total_classes - attended_count)
+    percentage = (
+        round((attended_count / total_classes) * 100, 1)
+        if total_classes > 0
+        else (100.0 if attended_count > 0 else 0.0)
+    )
+
+    return {
+        "course": {
+            "id": course.id,
+            "name": course.name,
+            "code": course.code,
+            "semester": course.semester,
+            "faculty_name": faculty.name,
+            "faculty_email": faculty.email,
+            "enrolled_at": enrollment.enrolled_at.isoformat() if enrollment.enrolled_at else None,
+        },
+        "analytics": {
+            "total_classes": total_classes,
+            "classes_attended": attended_count,
+            "classes_missed": missed_count,
+            "percentage": percentage,
+        },
+        "records": records,
+    }
 
 
 @router.post(

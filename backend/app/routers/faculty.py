@@ -330,7 +330,7 @@ async def enroll_student_face(
     except DuplicateFaceError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="duplicate_face",
+            detail=f"duplicate_face: {exc}",
         ) from exc
     except (EnrollmentDataError, EnrollmentServiceError) as exc:
         raise HTTPException(
